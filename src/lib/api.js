@@ -80,6 +80,7 @@ export const api = {
   put: (path, payload) => request('PUT', path, payload),
   patch: (path, payload) => request('PATCH', path, payload),
   delete: path => request('DELETE', path),
+  del: path => request('DELETE', path),
   /** Opens a PDF response in a preview window/tab (or triggers a native Save dialog / download). */
   async openDocument(path, { download = false } = {}) {
     if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.openDocument) {

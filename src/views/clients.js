@@ -168,9 +168,37 @@ export const render = async (container, params, ctx) => {
   ctx.on('delete-client', trigger => {
     const id = trigger.dataset.id;
     const name = trigger.dataset.name;
+    const row = rows.get(id);
+    const hasRecords = row && ((row.quotation_count || 0) + (row.invoice_count || 0) > 0);
+
+    if (hasRecords) {
+      const parts = [];
+      if (row.quotation_count > 0) parts.push(`${row.quotation_count} quotation${row.quotation_count > 1 ? 's' : ''}`);
+      if (row.invoice_count > 0) parts.push(`${row.invoice_count} invoice${row.invoice_count > 1 ? 's' : ''}`);
+
+      confirmModal({
+        title: 'Archive Client',
+        message: `"${esc(name)}" cannot be permanently deleted because they have associated records (${parts.join(', ')}). In accordance with GST recordkeeping rules, would you like to archive this client instead? (Archived clients are hidden from active lists while preserving historical accounting records).`,
+        confirmLabel: 'Archive client',
+        action: 'confirm-archive-client-table',
+        tone: 'primary',
+      });
+      ctx.on('confirm-archive-client-table', async () => {
+        try {
+          await api.post(`/api/clients/${id}/status`, { status: 'ARCHIVED' });
+          closeModal();
+          toast('Client archived successfully.');
+          ctx.rerender();
+        } catch (err) {
+          toast(err.message, 'danger');
+        }
+      });
+      return;
+    }
+
     confirmModal({
       title: 'Delete client',
-      message: `Are you sure you want to permanently delete "${esc(name)}"? Only clients with no quotations, invoices, software contracts, or POS subscriptions can be deleted. Otherwise, archive the client instead.`,
+      message: `Are you sure you want to permanently delete "${esc(name)}"? This action cannot be undone.`,
       confirmLabel: 'Delete client',
       action: 'confirm-delete-client-table',
       tone: 'danger',
@@ -280,9 +308,35 @@ const renderDetail = async (container, id, ctx) => {
     ctx.rerender();
   });
   ctx.on('delete-client-detail', () => {
+    const hasRecords = (client.quotation_count || 0) + (client.invoice_count || 0) > 0;
+    if (hasRecords) {
+      const parts = [];
+      if (client.quotation_count > 0) parts.push(`${client.quotation_count} quotation${client.quotation_count > 1 ? 's' : ''}`);
+      if (client.invoice_count > 0) parts.push(`${client.invoice_count} invoice${client.invoice_count > 1 ? 's' : ''}`);
+
+      confirmModal({
+        title: 'Archive Client',
+        message: `"${esc(client.name)}" cannot be permanently deleted because they have associated records (${parts.join(', ')}). In accordance with GST recordkeeping rules, would you like to archive this client instead?`,
+        confirmLabel: 'Archive client',
+        action: 'confirm-archive-client-detail',
+        tone: 'primary',
+      });
+      ctx.on('confirm-archive-client-detail', async () => {
+        try {
+          await api.post(`/api/clients/${client.id}/status`, { status: 'ARCHIVED' });
+          closeModal();
+          toast('Client archived successfully.');
+          ctx.rerender();
+        } catch (err) {
+          toast(err.message, 'danger');
+        }
+      });
+      return;
+    }
+
     confirmModal({
       title: 'Delete client',
-      message: `Are you sure you want to permanently delete "${esc(client.name)}"? Only clients with no quotations, invoices, software contracts, or POS subscriptions can be deleted. Otherwise, archive the client instead.`,
+      message: `Are you sure you want to permanently delete "${esc(client.name)}"? This action cannot be undone.`,
       confirmLabel: 'Delete client',
       action: 'confirm-delete-client-detail',
       tone: 'danger',
