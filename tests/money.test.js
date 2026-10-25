@@ -160,3 +160,163 @@ test('payment state is derived from money received and the due date', () => {
   assert.equal(paymentState(118000, 118000, '2026-10-01', '2026-10-12'), 'PAID');
   assert.equal(paymentState(118000, 120000, '2026-10-01', '2026-10-12'), 'OVERPAID');
 });
+
+/* ------------------------------------------- GST Inclusive & Exclusive Modes */
+
+test('Nextora POS Mobile priced at ₹5,999 with 18% GST in INCLUSIVE mode', () => {
+  // Entered product price: ₹5,999.00 (599,900 paise)
+  // Taxable: ₹5,083.90 (508,390 paise)
+  // GST 18%: ₹915.10 (91,510 paise) -> CGST ₹457.55 + SGST ₹457.55
+  // Customer payable: ₹5,999.00 (599,900 paise)
+  const line = computeLine(
+    item({ unit_price_minor: 599900, tax_rate_bp: 1800 }),
+    { tax_mode: 'INCLUSIVE' },
+  );
+
+  assert.equal(line.tax_mode, 'INCLUSIVE');
+  assert.equal(line.gross_minor, 599900);
+  assert.equal(line.taxable_minor, 508390); // ₹5,083.90
+  assert.equal(line.tax_minor, 91510);     // ₹915.10
+  assert.equal(line.total_minor, 599900);   // Exactly ₹5,999.00 - GST is NOT added twice
+
+  const doc = computeDocument({
+    items: [item({ unit_price_minor: 599900, tax_rate_bp: 1800 })],
+    tax_mode: 'INCLUSIVE',
+    supply_type: 'INTRA',
+    round_off_enabled: true,
+  });
+
+  assert.equal(doc.totals.taxable_total_minor, 508390);
+  assert.equal(doc.totals.tax_total_minor, 91510);
+  assert.equal(doc.totals.cgst_total_minor, 45755); // ₹457.55
+  assert.equal(doc.totals.sgst_total_minor, 45755); // ₹457.55
+  assert.equal(doc.totals.igst_total_minor, 0);
+  assert.equal(doc.totals.total_before_round_minor, 599900);
+  assert.equal(doc.totals.round_off_minor, 0);
+  assert.equal(doc.totals.grand_total_minor, 599900); // ₹5,999.00
+});
+
+test('Nextora POS Mobile priced at ₹5,999 with 18% GST in EXCLUSIVE mode', () => {
+  // Entered product price: ₹5,999.00 (599,900 paise)
+  // Taxable: ₹5,999.00 (599,900 paise)
+  // GST 18%: ₹1,079.82 (107,982 paise) -> CGST ₹539.91 + SGST ₹539.91
+  // Total before round: ₹7,078.82 (707,882 paise)
+  // Round off: +₹0.18 (+18 paise)
+  // Final grand total: ₹7,079.00 (707,900 paise)
+  const line = computeLine(
+    item({ unit_price_minor: 599900, tax_rate_bp: 1800 }),
+    { tax_mode: 'EXCLUSIVE' },
+  );
+
+  assert.equal(line.tax_mode, 'EXCLUSIVE');
+  assert.equal(line.gross_minor, 599900);
+  assert.equal(line.taxable_minor, 599900);  // ₹5,999.00
+  assert.equal(line.tax_minor, 107982);      // ₹1,079.82
+  assert.equal(line.total_minor, 707882);    // ₹7,078.82
+
+  const doc = computeDocument({
+    items: [item({ unit_price_minor: 599900, tax_rate_bp: 1800 })],
+    tax_mode: 'EXCLUSIVE',
+    supply_type: 'INTRA',
+    round_off_enabled: true,
+  });
+
+  assert.equal(doc.totals.taxable_total_minor, 599900);
+  assert.equal(doc.totals.tax_total_minor, 107982);
+  assert.equal(doc.totals.cgst_total_minor, 53991); // ₹539.91
+  assert.equal(doc.totals.sgst_total_minor, 53991); // ₹539.91
+  assert.equal(doc.totals.igst_total_minor, 0);
+  assert.equal(doc.totals.total_before_round_minor, 707882);
+  assert.equal(doc.totals.round_off_minor, 18);     // +₹0.18 round-off
+  assert.equal(doc.totals.grand_total_minor, 707900); // ₹7,079.00
+});
+
+test('INCLUSIVE mode supports all standard GST rate slabs (0%, 5%, 12%, 18%, 28%)', () => {
+  // 0% GST: ₹1,000 -> Taxable ₹1,000, Tax ₹0, Total ₹1,000
+  const slab0 = computeLine(item({ unit_price_minor: 100000, tax_rate_bp: 0 }), { tax_mode: 'INCLUSIVE' });
+  assert.equal(slab0.taxable_minor, 100000);
+  assert.equal(slab0.tax_minor, 0);
+  assert.equal(slab0.total_minor, 100000);
+
+  // 5% GST: ₹1,050 -> Taxable ₹1,000, Tax ₹50, Total ₹1,050
+  const slab5 = computeLine(item({ unit_price_minor: 105000, tax_rate_bp: 500 }), { tax_mode: 'INCLUSIVE' });
+  assert.equal(slab5.taxable_minor, 100000);
+  assert.equal(slab5.tax_minor, 5000);
+  assert.equal(slab5.total_minor, 105000);
+
+  // 12% GST: ₹1,120 -> Taxable ₹1,000, Tax ₹120, Total ₹1,120
+  const slab12 = computeLine(item({ unit_price_minor: 112000, tax_rate_bp: 1200 }), { tax_mode: 'INCLUSIVE' });
+  assert.equal(slab12.taxable_minor, 100000);
+  assert.equal(slab12.tax_minor, 12000);
+  assert.equal(slab12.total_minor, 112000);
+
+  // 18% GST: ₹1,180 -> Taxable ₹1,000, Tax ₹180, Total ₹1,180
+  const slab18 = computeLine(item({ unit_price_minor: 118000, tax_rate_bp: 1800 }), { tax_mode: 'INCLUSIVE' });
+  assert.equal(slab18.taxable_minor, 100000);
+  assert.equal(slab18.tax_minor, 18000);
+  assert.equal(slab18.total_minor, 118000);
+
+  // 28% GST: ₹1,280 -> Taxable ₹1,000, Tax ₹280, Total ₹1,280
+  const slab28 = computeLine(item({ unit_price_minor: 128000, tax_rate_bp: 2800 }), { tax_mode: 'INCLUSIVE' });
+  assert.equal(slab28.taxable_minor, 100000);
+  assert.equal(slab28.tax_minor, 28000);
+  assert.equal(slab28.total_minor, 128000);
+});
+
+test('INCLUSIVE mode with quantity > 1 and item discount extracts GST from net payable', () => {
+  // Quantity: 2, Unit price: ₹5,999 -> Gross: ₹11,998
+  // Item discount: ₹999 -> Net customer payable: ₹10,999 (1,099,900 paise)
+  // Taxable: roundDiv(1099900 * 10000, 11800) = 932,119 paise (₹9,321.19)
+  // Tax: 1099900 - 932119 = 167,781 paise (₹1,677.81)
+  // Total line payable: 1,099,900 paise (₹10,999.00)
+  const line = computeLine(
+    item({ quantity_milli: 2000, unit_price_minor: 599900, discount_minor: 99900, tax_rate_bp: 1800 }),
+    { tax_mode: 'INCLUSIVE' },
+  );
+
+  assert.equal(line.gross_minor, 1199800);
+  assert.equal(line.item_discount_minor, 99900);
+  assert.equal(line.taxable_minor, 932119);
+  assert.equal(line.tax_minor, 167781);
+  assert.equal(line.total_minor, 1099900);
+});
+
+test('INCLUSIVE mode inter-state supply routes full tax to IGST', () => {
+  const doc = computeDocument({
+    items: [item({ unit_price_minor: 599900, tax_rate_bp: 1800 })],
+    tax_mode: 'INCLUSIVE',
+    supply_type: 'INTER',
+  });
+
+  assert.equal(doc.totals.cgst_total_minor, 0);
+  assert.equal(doc.totals.sgst_total_minor, 0);
+  assert.equal(doc.totals.igst_total_minor, 91510);
+  assert.equal(doc.totals.tax_total_minor, 91510);
+  assert.equal(doc.totals.grand_total_minor, 599900);
+});
+
+test('INCLUSIVE mode document-level discount allocates proportionally and extracts tax', () => {
+  // Line 1: ₹5,999 @ 18% incl
+  // Line 2: ₹1,120 @ 12% incl
+  // Total gross: ₹7,119.00
+  // Invoice discount: 10% (1,000 bp) -> ₹711.90 (71,190 paise)
+  const doc = computeDocument({
+    items: [
+      item({ unit_price_minor: 599900, tax_rate_bp: 1800 }),
+      item({ unit_price_minor: 112000, tax_rate_bp: 1200 }),
+    ],
+    tax_mode: 'INCLUSIVE',
+    invoice_discount_bp: 1000,
+    supply_type: 'INTRA',
+    round_off_enabled: false,
+  });
+
+  const sumLineTotals = doc.lines.reduce((acc, l) => acc + l.total_minor, 0);
+  const sumTax = doc.lines.reduce((acc, l) => acc + l.tax_minor, 0);
+  const sumTaxable = doc.lines.reduce((acc, l) => acc + l.taxable_minor, 0);
+
+  assert.equal(sumTaxable + sumTax, sumLineTotals);
+  assert.equal(doc.totals.taxable_total_minor, sumTaxable);
+  assert.equal(doc.totals.tax_total_minor, sumTax);
+  assert.equal(doc.totals.grand_total_minor, sumLineTotals);
+});

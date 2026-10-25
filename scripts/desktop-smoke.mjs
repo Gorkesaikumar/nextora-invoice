@@ -315,6 +315,38 @@ async function run() {
   step('POS customer tracker', `${tracker?.columns} columns, ${tracker?.rows} rows`);
   if (!tracker?.hasTable) problems.push('The tracker grid did not render a table.');
 
+  // Test the Add Customer workflow in the UI (reproducing and verifying fix for "r is not a function")
+  await evaluate(win, "document.querySelector('[data-action=\"customer-new\"]')?.click()");
+  await waitFor(win, "document.querySelector('#customer-form') ? 'ok' : ''", 'Add Customer modal opening');
+  const modalOpened = await evaluate(win, "Boolean(document.querySelector('#customer-form'))");
+  if (!modalOpened) problems.push('Clicking Add Customer did not open the modal.');
+
+  // Test form submission
+  await evaluate(win, `(() => {
+    const form = document.querySelector('#customer-form');
+    if (!form) return;
+    const nameInput = form.querySelector('[name=\"name\"]');
+    if (nameInput) nameInput.value = 'Smoke Test Customer';
+    const bizInput = form.querySelector('[name=\"business_name\"]');
+    if (bizInput) bizInput.value = 'Smoke Test Cafe';
+    document.querySelector('[data-action=\"customer-save\"]')?.click();
+  })()`);
+
+  await waitFor(win, "!document.querySelector('#customer-form') ? 'ok' : ''", 'Add Customer modal closing after save');
+  const modalClosed = await evaluate(win, "!document.querySelector('#customer-form')");
+  if (!modalClosed) problems.push('Add Customer modal did not close after saving.');
+
+  await delay(500);
+  const updatedTracker = await evaluate(win, `(() => {
+    const content = document.querySelector('#content');
+    return {
+      rows: content.querySelectorAll('tbody tr').length,
+      hasSmokeCustomer: content.innerText.includes('Smoke Test Customer'),
+    };
+  })()`);
+  step('Add Customer workflow', `modal opened, saved customer, rows: ${updatedTracker?.rows}, contains customer: ${updatedTracker?.hasSmokeCustomer}`);
+  if (!updatedTracker?.hasSmokeCustomer) problems.push('Added customer did not appear in the tracker table.');
+
   // The Products & Services page must render, have proper horizontal padding and table alignment
   await evaluate(win, "location.hash = '#/products'");
   await waitFor(win, "document.querySelector('#content h1')?.textContent?.trim() === 'Products & Services' ? 'ok' : ''",

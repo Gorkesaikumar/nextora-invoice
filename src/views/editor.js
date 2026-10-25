@@ -15,6 +15,7 @@ const blankItem = (reference, business = {}) => ({
   product_id: null, description: '', category: '', hsn_sac: '', unit: 'NOS', quantity_milli: 1000,
   unit_price_minor: 0, discount_bp: 0, discount_minor: 0,
   tax_rate_bp: reference?.business?.default_tax_rate_bp ?? 1800, tax_treatment: 'TAXABLE',
+  tax_mode: reference?.business?.product_price_tax_mode || 'EXCLUSIVE',
 });
 
 const blankDocument = (kind, reference) => ({
@@ -26,12 +27,14 @@ const blankDocument = (kind, reference) => ({
   payment_terms: isQuotation(kind) ? '' : 'Payment due within the stated terms.',
   po_reference: '', project_reference: '', invoice_discount_bp: 0, invoice_discount_minor: 0,
   round_off_enabled: reference?.business?.rounding_mode !== 'NONE',
+  tax_mode: reference?.business?.product_price_tax_mode || 'EXCLUSIVE',
   items: [blankItem(reference)], additional_charges: [], milestones: [],
 });
 
 const fromRecord = (kind, record, items, milestones = []) => ({
   ...blankDocument(kind, null),
   ...record,
+  tax_mode: record.tax_mode || 'EXCLUSIVE',
   expiry_date: record.expiry_date || null,
   due_date: record.due_date || null,
   items: items.map(item => ({
@@ -39,6 +42,7 @@ const fromRecord = (kind, record, items, milestones = []) => ({
     unit: item.unit, quantity_milli: item.quantity_milli, unit_price_minor: item.unit_price_minor,
     discount_bp: item.discount_bp, discount_minor: item.discount_minor, tax_rate_bp: item.tax_rate_bp,
     tax_treatment: item.tax_treatment,
+    tax_mode: item.tax_mode || record.tax_mode || 'EXCLUSIVE',
   })),
   additional_charges: (record.additional_charges || []).map(charge => ({ ...charge })),
   milestones: milestones.map(milestone => ({ ...milestone })),
@@ -89,6 +93,7 @@ async function renderEditor(container, params, ctx) {
   const recompute = () => {
     try {
       computed = computeDocument({
+        tax_mode: state.tax_mode || 'EXCLUSIVE',
         items: state.items,
         additional_charges: state.additional_charges,
         invoice_discount_bp: state.invoice_discount_bp,
@@ -273,6 +278,12 @@ async function renderEditor(container, params, ctx) {
     ? field({ label: 'Valid until', name: 'expiry_date', type: 'date', value: state.expiry_date || '' })
     : field({ label: 'Due date', name: 'due_date', type: 'date', value: state.due_date || '', hint: 'Leave empty to use the payment terms below.' })}
         ${field({ label: 'Place of supply', name: 'place_of_supply_state_code', options: [], id: 'place-of-supply', hint: 'Required whenever a line is taxable. It decides CGST/SGST or IGST.' })}
+        ${field({ label: 'Pricing tax mode', name: 'tax_mode', value: state.tax_mode,
+    options: [
+      { value: 'EXCLUSIVE', label: 'EXCLUSIVE — Rates exclude GST' },
+      { value: 'INCLUSIVE', label: 'INCLUSIVE — Rates include GST' },
+    ],
+    hint: 'Exclusive: Tax added on top. Inclusive: Tax extracted from entered price.' })}
         ${field({ label: 'Payment terms (days)', name: 'payment_terms_days', type: 'number', min: '0', max: '365', value: String(state.payment_terms_days) })}
         ${isQuotation(kind)
     ? ''
@@ -345,7 +356,7 @@ async function renderEditor(container, params, ctx) {
   container.querySelector('#place-of-supply').innerHTML = stateOptions();
 
   ctx.on('back-to-list', () => ctx.navigate(`#/${list}`));
-  ctx.on('item-add', () => { state.items.push(blankItem(ctx.reference)); rerenderItems(); });
+  ctx.on('item-add', () => { state.items.push({ ...blankItem(ctx.reference), tax_mode: state.tax_mode }); rerenderItems(); });
   ctx.on('item-remove', trigger => {
     if (state.items.length === 1) { toast('A document needs at least one line item.', 'danger'); return; }
     state.items.splice(Number(trigger.dataset.index), 1); rerenderItems();
@@ -409,8 +420,10 @@ async function renderEditor(container, params, ctx) {
   function collectForm() {
     const form = new FormData(container.querySelector('#document-form'));
     const text = name => String(form.get(name) || '').trim();
+    const docTaxMode = text('tax_mode') || state.tax_mode || 'EXCLUSIVE';
     return {
       client_id: String(form.get('client_id') || ''),
+      tax_mode: docTaxMode,
       title: text('title'),
       description: String(form.get('description') || ''),
       scope_of_work: String(form.get('scope_of_work') || ''),
@@ -432,7 +445,10 @@ async function renderEditor(container, params, ctx) {
       invoice_discount_bp: Math.round((Number(form.get('invoice_discount_bp') || 0) || 0) * 100),
       invoice_discount_minor: parseAmount(form.get('invoice_discount_minor')),
       round_off_enabled: String(form.get('round_off_enabled')) === 'true',
-      items: state.items,
+      items: state.items.map(item => ({
+        ...item,
+        tax_mode: item.tax_mode || docTaxMode,
+      })),
       // Empty helper rows are dropped so the server only sees real charges and milestones.
       additional_charges: state.additional_charges.filter(charge => charge.label.trim() && charge.amount_minor > 0),
       milestones: state.milestones.filter(milestone => milestone.title.trim()),
@@ -486,6 +502,14 @@ async function renderEditor(container, params, ctx) {
 
   // Keep the catalog picker working after the items table is re-rendered.
   container.addEventListener('change', event => {
+    const taxModeTarget = event.target.closest('[name="tax_mode"]');
+    if (taxModeTarget) {
+      state.tax_mode = taxModeTarget.value;
+      state.items.forEach(item => { item.tax_mode = state.tax_mode; });
+      recompute();
+      refresh();
+      return;
+    }
     const picker = event.target.closest('#catalog-picker');
     if (picker && picker.value) {
       const product = products.find(row => row.id === picker.value);
@@ -496,6 +520,7 @@ async function renderEditor(container, params, ctx) {
           product_id: product.id, description: product.name, category: product.category, hsn_sac: product.hsn_sac,
           unit: product.unit, quantity_milli: 1000, unit_price_minor: product.unit_price_minor,
           discount_bp: 0, discount_minor: 0, tax_rate_bp: product.tax_rate_bp, tax_treatment: product.tax_treatment,
+          tax_mode: product.tax_mode || state.tax_mode || 'EXCLUSIVE',
         };
         if (reuseBlank) state.items[state.items.length - 1] = item;
         else state.items.push(item);
@@ -740,6 +765,7 @@ async function renderDetail(container, params, ctx) {
     <div class="mb-4 flex flex-wrap items-center gap-2">
       ${statusBadge(status)}
       ${record.status === 'DRAFT' ? badge('Not yet numbered', 'warn') : badge(number, 'neutral')}
+      ${badge(record.tax_mode === 'INCLUSIVE' ? 'GST Inclusive' : 'GST Exclusive', 'neutral')}
       ${isQuotation(kind) && record.converted_invoice_id ? badge('Converted to invoice', 'success') : ''}
       ${record.supply_type ? badge(record.supply_type === 'INTER' ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)', 'neutral') : ''}
     </div>
@@ -821,6 +847,7 @@ async function renderDetail(container, params, ctx) {
           ${[['Number', number || 'Draft'], ['Issue date', date(record.issue_date)],
     [isQuotation(kind) ? 'Valid until' : 'Due date', date(isQuotation(kind) ? record.expiry_date : record.due_date)],
     ['Payment terms', `${record.payment_terms_days} day(s)`],
+    ['Pricing tax mode', record.tax_mode === 'INCLUSIVE' ? 'GST Inclusive' : 'GST Exclusive'],
     ['Place of supply', record.place_of_supply_state_code || '—'],
     ['PO reference', record.po_reference || '—'], ['Project', record.project_reference || '—'],
     // A quotation is sent, an invoice is issued: they store different timestamps.

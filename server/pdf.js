@@ -355,8 +355,10 @@ export async function renderDocument(snapshot, { logoPng = null, preview = false
     const lines = snapshot.lines || [];
     lines.forEach((line, index) => {
       const descriptionLines = wrapText(font, line.description || '', 7.5, COLUMNS[1].width - 10);
-      const meta = [line.hsn_sac ? `HSN/SAC ${line.hsn_sac}` : '', line.tax_treatment !== 'TAXABLE' ? treatmentLabel(line.tax_treatment) : '']
-        .filter(Boolean).join('  ·  ');
+      const meta = [
+        line.hsn_sac ? `HSN/SAC ${line.hsn_sac}` : '',
+        line.tax_treatment !== 'TAXABLE' ? treatmentLabel(line.tax_treatment) : (line.tax_mode === 'INCLUSIVE' ? 'Price includes GST' : ''),
+      ].filter(Boolean).join('  ·  ');
       const metaLines = meta ? wrapText(font, meta, 6, COLUMNS[1].width - 10) : [];
       const rowHeight = Math.max(15, descriptionLines.length * 8 + 6 + metaLines.length * 7);
       if (y - rowHeight < MARGIN + FOOTER_HEIGHT) {

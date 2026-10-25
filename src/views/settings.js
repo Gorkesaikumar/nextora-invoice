@@ -77,6 +77,12 @@ export const render = async (container, params, ctx) => {
     options: ctx.reference.currencies.map(c => ({ value: c.code, label: c.label })) })}
         ${field({ label: 'Rounding', name: 'rounding_mode', value: settings.rounding_mode,
     options: [{ value: 'NEAREST_RUPEE', label: 'Round the grand total to the nearest rupee' }, { value: 'NONE', label: 'Never round the total' }] })}
+        ${field({ label: 'Product price tax mode', name: 'product_price_tax_mode', value: settings.product_price_tax_mode || 'EXCLUSIVE',
+    options: [
+      { value: 'EXCLUSIVE', label: 'EXCLUSIVE — GST is added to the product price' },
+      { value: 'INCLUSIVE', label: 'INCLUSIVE — Product price includes GST' },
+    ],
+    hint: 'Exclusive: Tax added on top. Inclusive: Tax extracted from entered price.' })}
         ${field({ label: 'Default GST rate for new lines', name: 'default_tax_rate_bp', value: String(settings.default_tax_rate_bp),
     options: ctx.reference.gst_rate_slabs.map(slab => ({ value: String(slab.bp), label: slab.label })) })}
         ${field({ label: 'Reverse charge applies', name: 'reverse_charge', value: String(settings.reverse_charge),
@@ -219,6 +225,7 @@ export const render = async (container, params, ctx) => {
       default_quotation_validity_days: Number(form.get('default_quotation_validity_days') || 30),
       default_payment_terms_days: Number(form.get('default_payment_terms_days') || 15),
       default_currency: text('default_currency'), rounding_mode: text('rounding_mode'),
+      product_price_tax_mode: text('product_price_tax_mode') || 'EXCLUSIVE',
       default_tax_rate_bp: Number(form.get('default_tax_rate_bp') || 0),
       reverse_charge: String(form.get('reverse_charge')) === 'true',
       quotation_prefix: text('quotation_prefix'), invoice_prefix: text('invoice_prefix'),

@@ -41,6 +41,8 @@ export const statusLabel = status => ({
   DRAFT: 'Draft', SENT: 'Sent', ACCEPTED: 'Accepted', REJECTED: 'Rejected', EXPIRED: 'Expired',
   CANCELLED: 'Cancelled', VOID: 'Void', ISSUED: 'Issued', PAID: 'Paid', UNPAID: 'Unpaid',
   PARTIALLY_PAID: 'Partially paid', OVERDUE: 'Overdue', OVERPAID: 'Overpaid',
+  PENDING_APPROVAL: 'Pending approval', ACTIVE: 'Active', SIGNED: 'Signed', TERMINATED: 'Terminated',
+  PENDING: 'Pending', VERIFIED: 'Verified', APPROVED: 'Approved for payment', DISPUTED: 'Disputed', REVERSED: 'Reversed',
 }[status] || titleCase(status));
 
 const TONES = {
@@ -55,6 +57,8 @@ export const statusTone = status => ({
   DRAFT: 'neutral', SENT: 'info', ACCEPTED: 'success', REJECTED: 'danger', EXPIRED: 'warn',
   CANCELLED: 'danger', VOID: 'danger', ISSUED: 'info', PAID: 'success', UNPAID: 'warn',
   PARTIALLY_PAID: 'info', OVERDUE: 'danger', OVERPAID: 'warn',
+  PENDING_APPROVAL: 'warn', ACTIVE: 'success', SIGNED: 'success', TERMINATED: 'danger',
+  PENDING: 'warn', VERIFIED: 'info', APPROVED: 'info', DISPUTED: 'danger', REVERSED: 'warn',
 }[status] || 'neutral');
 
 export const badge = (text, tone = 'neutral') =>
@@ -70,6 +74,8 @@ const SVG_ICONS = {
   receipt_long: '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/>',
   groups: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   inventory_2: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  campaign: '<path d="M19 11V9a7 7 0 0 0-14 0v2l-2 2v2h18v-2l-2-2Z"/><path d="M10 19a2 2 0 0 0 4 0"/><path d="M9 13h6"/>',
+  handshake: '<path d="m11 17 2 2a1 1 0 0 0 1.4 0l4.3-4.3a2 2 0 1 0-2.8-2.8l-.2.2"/><path d="m14 14 1 1"/><path d="m7 14 1.7-1.7a2 2 0 1 0-2.8-2.8L2 13.4"/><path d="m20 18 2-2a2 2 0 0 0 0-2.8l-3.2-3.2"/>',
   payments: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   point_of_sale: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/><path d="M7 8h4"/><path d="M7 12h2"/><path d="M15 8h2"/><path d="M15 12h2"/>',
   bar_chart: '<line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/>',

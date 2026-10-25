@@ -7,6 +7,13 @@
  * UI preview, the API response, the PDF and the stored snapshot agree exactly.
  */
 
+export { formatMinor } from './words.js';
+
+export function toMinor(major) {
+  const value = Number(major || 0);
+  return roundDiv(Math.round(value * 1000), 10);
+}
+
 export const MINOR_PER_UNIT = 100; // paise in a rupee
 export const BP_PER_UNIT = 10000; // basis points in 100%
 export const QUANTITY_SCALE = 1000; // thousandths
@@ -94,30 +101,46 @@ export function splitTax(taxMinor, supplyType) {
   return { cgst_minor: cgst, sgst_minor: taxMinor - cgst, igst_minor: 0 };
 }
 
+export const TAX_MODES = Object.freeze(['EXCLUSIVE', 'INCLUSIVE']);
+
 const exempt = treatment => treatment !== 'TAXABLE';
 
 /** Computes one line item exactly as the server will store it. */
-export function computeLine(item, { invoiceDiscountAllocation = 0 } = {}) {
+export function computeLine(item, { invoiceDiscountAllocation = 0, tax_mode = 'EXCLUSIVE' } = {}) {
+  const mode = item.tax_mode || tax_mode || 'EXCLUSIVE';
   const gross = lineAmount(item.unit_price_minor, item.quantity_milli);
   const itemDiscount = item.discount_bp > 0
     ? percentOf(gross, item.discount_bp)
     : Math.min(item.discount_minor || 0, gross);
   const net = gross - itemDiscount;
-  const taxable = net - invoiceDiscountAllocation;
-  if (taxable < 0) {
+  const payable = net - invoiceDiscountAllocation;
+  if (payable < 0) {
     const error = new Error('Discounts cannot exceed the line value.');
     error.status = 400;
     error.code = 'DISCOUNT_EXCEEDS_VALUE';
     throw error;
   }
-  const tax = exempt(item.tax_treatment) ? 0 : percentOf(taxable, item.tax_rate_bp);
+  const isExempt = exempt(item.tax_treatment) || !item.tax_rate_bp;
+  let taxable = payable;
+  let tax = 0;
+  if (!isExempt) {
+    if (mode === 'INCLUSIVE') {
+      taxable = roundDiv(payable * BP_PER_UNIT, BP_PER_UNIT + item.tax_rate_bp);
+      tax = payable - taxable;
+    } else {
+      taxable = payable;
+      tax = percentOf(taxable, item.tax_rate_bp);
+    }
+  }
   return {
     gross_minor: gross,
     item_discount_minor: itemDiscount,
     invoice_discount_minor: invoiceDiscountAllocation,
     taxable_minor: taxable,
     tax_minor: tax,
+    total_minor: taxable + tax,
     exempt: exempt(item.tax_treatment),
+    tax_mode: mode,
   };
 }
 
@@ -132,8 +155,16 @@ export function computeDocument({
   invoice_discount_minor = 0,
   supply_type = 'INTRA',
   round_off_enabled = true,
+  tax_mode = 'EXCLUSIVE',
 } = {}) {
-  const nets = items.map(item => computeLine(item).taxable_minor);
+  const mode = tax_mode || 'EXCLUSIVE';
+  const nets = items.map(item => {
+    const gross = lineAmount(item.unit_price_minor, item.quantity_milli);
+    const itemDiscount = item.discount_bp > 0
+      ? percentOf(gross, item.discount_bp)
+      : Math.min(item.discount_minor || 0, gross);
+    return gross - itemDiscount;
+  });
   const netTotal = sum(nets);
   const invoiceDiscount = invoice_discount_bp > 0
     ? percentOf(netTotal, invoice_discount_bp)
@@ -148,10 +179,11 @@ export function computeDocument({
 
   const lines = items.map((item, index) => {
     const share = allocations[index];
-    const line = computeLine(item, { invoiceDiscountAllocation: share });
+    const line = computeLine(item, { invoiceDiscountAllocation: share, tax_mode: mode });
     const split = splitTax(line.tax_minor, supply_type);
     return {
       ...item,
+      tax_mode: line.tax_mode,
       gross_minor: line.gross_minor,
       item_discount_minor: line.item_discount_minor,
       invoice_discount_minor: share,
@@ -211,6 +243,7 @@ export function computeDocument({
       grand_total_minor: totalBeforeRound + roundOff,
       supply_type,
       round_off_enabled: Boolean(round_off_enabled),
+      tax_mode: mode,
     },
   };
 }

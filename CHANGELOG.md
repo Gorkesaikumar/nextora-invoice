@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-10-25
+
+### Added
+- **Influencer Marketing & Revenue-Sharing Contracts Management:**
+  - Added full administrative **Marketing & Partnerships** module with navigation items for Overview, Influencers, Contracts & Agreements, Import Sales Excel, Influencer Sales Reports, and Brand Assets.
+  - Comprehensive Influencer Profiles storing legal name, display name, normalized Instagram handle (`@username`), profile URL, phone with country code, email, full address, social handles, niche, followers count, internal notes, and avatar/photo data URI.
+  - Revenue-Sharing Agreement lifecycle (`DRAFT` → `PENDING_APPROVAL` → `APPROVED` → `SIGNED` → `ACTIVE` → `COMPLETED` / `TERMINATED` / `EXPIRED`).
+  - Strict contract immutability once signed or activated, capturing full legal snapshots of brand settings, influencer details, commercial terms, and signature records.
+  - Multi-tier and flat revenue-share calculation modes, milestone-based commission schedules, minimum sales thresholds, and TDS withholding support (Section 194H / 194J).
+  - Agreement termination workflow with formal notice periods, effective dates, and audit trail recording.
+- **Influencer Sales Tracking & Smart Excel Import Engine:**
+  - Standardized Excel template generation (`/api/marketing/sales/template.xlsx`) prefilled with valid active products, influencers, and sample data.
+  - Flexible column header alias resolution matching arbitrary user naming conventions (`Customer Name`, `customer_name`, `Client`, `Business Name`, `Company`, `Purchased Date`, `Txn Date`, `Product`, `Influencer`, etc.).
+  - Robust multi-format date parser handling Excel serial numbers, ISO-8601 strings, `DD/MM/YYYY`, `MM/DD/YYYY`, and textual dates.
+  - Pre-import validation preview returning valid, invalid, duplicate, and unmapped rows with detailed inline diagnostics before committing.
+  - Safe import batch processing (`POST /api/marketing/sales/import`) with batch attribution, influencer remapping, and idempotent deduplication against both file records and historical database sales.
+  - Per-sale status transitions (`PENDING_VERIFICATION` → `VERIFIED` → `COMMISSION_ACCRUED` → `SETTLED` / `DISPUTED` / `CANCELLED`).
+  - Commission recalculation engine ensuring zero false payouts by restricting commission entitlement strictly to verified sales linked to active revenue-sharing agreements.
+  - Export segregated sales records to stylized Excel workbooks (`.xlsx`) with automated totals and summary tabs.
+- **High-Fidelity PDF Generation Engines:**
+  - Legal Contract Generator (`server/contract-pdf.js`): Vector PDF renderer producing formal partnership agreements with Nextora Creations branding, optional influencer logo/photo, scope of work, commercial terms, confidentiality, intellectual property, termination clauses, and dual signature blocks.
+  - Landscape A4 Sales Report Generator (`server/sales-report-pdf.js`): Multi-page tabular PDF generator featuring company branding, summary metric cards, repeated table headers across page breaks, Indian currency formatting, and page numbering.
+- **Configurable GST Pricing Engine (Inclusive vs Exclusive):**
+  - Added global business setting `product_price_tax_mode` (`EXCLUSIVE` | `INCLUSIVE`) with seamless UI toggle in Business Settings.
+  - GST-inclusive pricing backward calculation: accurately splits entered gross price (e.g., ₹5,999 with 18% GST yields taxable ₹5,083.90, CGST ₹457.55, SGST ₹457.55, and final customer payable ₹5,999.00).
+  - GST-exclusive pricing forward calculation: ₹5,999.00 taxable + 18% GST (₹1,079.82) yields final customer payable ₹7,078.82.
+  - Invariant snapshot preservation: issued invoices and converted quotations preserve their original pricing tax mode immutably.
+- **End-to-End Test Suite & Desktop Automation:**
+  - Added `tests/e2e-scenarios.test.js` validating 9 comprehensive scenarios including customer tracker creation, GST-exclusive pricing, GST-inclusive pricing, contract lifecycle & PDF generation, Excel import & deduplication, sales report PDFs, document conversion, and security restrictions.
+  - Added `tests/influencer-sales.test.js` and `tests/marketing.test.js`.
+  - Expanded automated test suite from 106 to 161 tests with 100% pass rate.
+
+### Fixed
+- **Customer Tracker `r is not a function` Modal Crash:**
+  - Resolved regression where minified production builds passed an array to `openCustomerModal` while the code invoked `employees()` as a function.
+  - Safely normalized parameter handling to support both array and factory function inputs: `Array.isArray(employees) ? employees : (typeof employees === 'function' ? employees() : [])`.
+  - Added debounce protection (`isSaving`) on the Add Customer submission handler to prevent accidental double-submits.
+- **Products Catalog Responsive Layout Overflow:**
+  - Resolved horizontal viewport clipping on mobile and compact screens by adding container responsiveness, padding constraints, and flexible table overflow wrappers.
+
+### Security
+- Applied strict role-based access control (`OWNER` and `ADMIN`) across all marketing, agreement, sales import, and commission mutation endpoints.
+- Enforced complete database-level snapshotting preventing tampering with active or executed marketing agreements.
+- Protected commission payouts by preventing automatic attribution on disputed, cancelled, or unverified sales.
+
+---
+
 ## [1.1.2] - 2026-10-25
 
 ### Added

@@ -491,4 +491,153 @@ test('the reference endpoint exposes configuration the UI needs without inventin
   assert.equal(reference.currencies[0].code, 'INR');
   assert.match(reference.numbering_preview.invoice, /^NC\/INV\/\d{4}-\d{2}\/0001$/);
   assert.equal(reference.business.business_name, 'Nextora Creations');
+  assert.equal(reference.business.product_price_tax_mode, 'EXCLUSIVE');
+  assert.deepEqual(reference.tax_modes, ['EXCLUSIVE', 'INCLUSIVE']);
+});
+
+test('configurable GST pricing: EXCLUSIVE vs INCLUSIVE mode, setting switching, and historical immutability', async () => {
+  const client = await withOwner(18);
+  const customer = await newClientRecord(client, { state_code: '36' }); // Intra-state (Telangana)
+
+  // 1. Initial state: EXCLUSIVE mode. Create invoice for Nextora POS Mobile at ₹5,999 with 18% GST.
+  const exclDraft = draft(customer.id, {
+    issue_date: '2026-10-18',
+    tax_mode: 'EXCLUSIVE',
+    items: [line({
+      description: 'Nextora POS Mobile',
+      unit_price_minor: 599900,
+      tax_rate_bp: 1800,
+      tax_treatment: 'TAXABLE',
+    })],
+  });
+
+  const exclCreated = client.ok(await client.json('POST', '/api/invoices', exclDraft));
+  assert.equal(exclCreated.invoice.tax_mode, 'EXCLUSIVE');
+  assert.equal(exclCreated.invoice.totals.taxable_total_minor, 599900); // ₹5,999.00
+  assert.equal(exclCreated.invoice.totals.tax_total_minor, 107982);     // ₹1,079.82
+  assert.equal(exclCreated.invoice.totals.cgst_total_minor, 53991);     // ₹539.91
+  assert.equal(exclCreated.invoice.totals.sgst_total_minor, 53991);     // ₹539.91
+  assert.equal(exclCreated.invoice.totals.grand_total_minor, 707900);    // ₹7,079.00 (with round off)
+
+  // Issue the exclusive invoice to freeze its snapshot.
+  const exclIssued = client.ok(await client.json('POST', `/api/invoices/${exclCreated.invoice.id}/issue`));
+  assert.equal(exclIssued.invoice.status, 'ISSUED');
+  assert.equal(exclIssued.invoice.totals.grand_total_minor, 707900);
+
+  // 2. Switch business settings to INCLUSIVE mode.
+  await configureIssuer(client, { product_price_tax_mode: 'INCLUSIVE' });
+  const refAfterSwitch = client.ok(await client.json('GET', '/api/reference'));
+  assert.equal(refAfterSwitch.business.product_price_tax_mode, 'INCLUSIVE');
+
+  // 3. Historical verification: The previously issued invoice MUST NOT be recalculated or changed.
+  const exclFetched = client.ok(await client.json('GET', `/api/invoices/${exclCreated.invoice.id}`));
+  assert.equal(exclFetched.invoice.tax_mode, 'EXCLUSIVE', 'historical tax_mode is preserved');
+  assert.equal(exclFetched.invoice.totals.grand_total_minor, 707900, 'historical grand total is untouched');
+  assert.equal(exclFetched.invoice.totals.taxable_total_minor, 599900, 'historical taxable is untouched');
+
+  // 4. Create new invoice in INCLUSIVE mode for Nextora POS Mobile at ₹5,999 with 18% GST.
+  const inclDraft = draft(customer.id, {
+    issue_date: '2026-10-19',
+    tax_mode: 'INCLUSIVE',
+    items: [line({
+      description: 'Nextora POS Mobile',
+      unit_price_minor: 599900,
+      tax_rate_bp: 1800,
+      tax_treatment: 'TAXABLE',
+    })],
+  });
+
+  const inclCreated = client.ok(await client.json('POST', '/api/invoices', inclDraft));
+  assert.equal(inclCreated.invoice.tax_mode, 'INCLUSIVE');
+  // ₹5,999 at 18% GST inclusive:
+  // Taxable: ₹5,083.90 (508,390 paise)
+  // GST: ₹915.10 (91,510 paise) -> CGST ₹457.55 + SGST ₹457.55
+  // Customer pays exactly ₹5,999.00 (599,900 paise)
+  assert.equal(inclCreated.invoice.totals.taxable_total_minor, 508390);
+  assert.equal(inclCreated.invoice.totals.tax_total_minor, 91510);
+  assert.equal(inclCreated.invoice.totals.cgst_total_minor, 45755);
+  assert.equal(inclCreated.invoice.totals.sgst_total_minor, 45755);
+  assert.equal(inclCreated.invoice.totals.igst_total_minor, 0);
+  assert.equal(inclCreated.invoice.totals.round_off_minor, 0);
+  assert.equal(inclCreated.invoice.totals.grand_total_minor, 599900);
+
+  // Issue the inclusive invoice and verify snapshot integrity.
+  const inclIssued = client.ok(await client.json('POST', `/api/invoices/${inclCreated.invoice.id}/issue`));
+  assert.equal(inclIssued.invoice.status, 'ISSUED');
+  assert.equal(inclIssued.invoice.totals.grand_total_minor, 599900);
+  assert.equal(inclIssued.invoice.snapshot.document.tax_mode, 'INCLUSIVE');
+  assert.equal(inclIssued.invoice.snapshot.lines[0].tax_mode, 'INCLUSIVE');
+  assert.equal(inclIssued.invoice.snapshot.lines[0].taxable_minor, 508390);
+  assert.equal(inclIssued.invoice.snapshot.lines[0].tax_minor, 91510);
+  assert.equal(inclIssued.invoice.snapshot.lines[0].total_minor, 599900);
+
+  // Verify PDF preview renders successfully for the inclusive invoice.
+  const pdfResponse = await client.binary('GET', `/api/invoices/${inclCreated.invoice.id}/pdf`);
+  assert.equal(pdfResponse.status, 200);
+  assert.equal(pdfResponse.headers.get('content-type'), 'application/pdf');
+  const pdfMeta = await pdfPageCount(pdfResponse.bytes);
+  assert.ok(pdfMeta.pages >= 1);
+});
+
+test('quotation conversion and credit notes inherit and preserve INCLUSIVE tax mode', async () => {
+  const client = await withOwner(19);
+  const customer = await newClientRecord(client, { state_code: '36' });
+
+  // 1. Create a quotation with INCLUSIVE mode.
+  const qtn = client.ok(await client.json('POST', '/api/quotations', draft(customer.id, {
+    issue_date: '2026-10-20',
+    tax_mode: 'INCLUSIVE',
+    items: [line({
+      description: 'Nextora POS Mobile Subscription',
+      unit_price_minor: 599900,
+      tax_rate_bp: 1800,
+      tax_treatment: 'TAXABLE',
+    })],
+  })));
+
+  assert.equal(qtn.quotation.tax_mode, 'INCLUSIVE');
+  assert.equal(qtn.quotation.totals.grand_total_minor, 599900);
+
+  // Send and accept the quotation.
+  client.ok(await client.json('POST', `/api/quotations/${qtn.quotation.id}/send`));
+  client.ok(await client.json('POST', `/api/quotations/${qtn.quotation.id}/transition`, { status: 'ACCEPTED', note: 'Customer accepted' }));
+
+  // Convert to invoice.
+  const converted = client.ok(await client.json('POST', `/api/quotations/${qtn.quotation.id}/convert`, {
+    issue_date: '2026-10-20',
+  }));
+
+  assert.equal(converted.invoice.tax_mode, 'INCLUSIVE', 'converted invoice preserved tax_mode');
+  assert.equal(converted.invoice.totals.grand_total_minor, 599900, 'converted invoice preserved grand total');
+  assert.equal(converted.invoice.totals.taxable_total_minor, 508390);
+
+  // Issue the converted invoice.
+  client.ok(await client.json('POST', `/api/invoices/${converted.invoice.id}/issue`));
+
+  // Issue a credit note against this inclusive invoice.
+  const creditNote = client.ok(await client.json('POST', `/api/invoices/${converted.invoice.id}/credit-notes`, {
+    kind: 'CREDIT',
+    reason: 'Discount adjustment',
+    issue_date: '2026-10-21',
+    notes: 'Price adjustment',
+    items: [{
+      product_id: null,
+      description: 'Partial price adjustment',
+      category: '',
+      hsn_sac: '998314',
+      unit: 'NOS',
+      quantity_milli: 1000,
+      unit_price_minor: 118000, // ₹1,180
+      discount_bp: 0,
+      discount_minor: 0,
+      tax_rate_bp: 1800,
+      tax_treatment: 'TAXABLE',
+    }],
+  }));
+
+  assert.equal(creditNote.note.tax_mode, 'INCLUSIVE', 'credit note inherited invoice tax_mode');
+  // For ₹1,180 at 18% inclusive: Taxable = 100000 (₹1,000), Tax = 18000 (₹180), Total = 118000 (₹1,180)
+  assert.equal(creditNote.note.totals.taxable_total_minor, 100000);
+  assert.equal(creditNote.note.totals.tax_total_minor, 18000);
+  assert.equal(creditNote.note.totals.grand_total_minor, 118000);
 });

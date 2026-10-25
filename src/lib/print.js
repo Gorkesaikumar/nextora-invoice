@@ -93,7 +93,7 @@ export function printDocument({ kind, document, items, milestones = [], client, 
             <td class="py-1">${index + 1}</td>
             <td class="py-1">${esc(item.description)}
               ${item.hsn_sac ? `<div class="text-gray-600">HSN/SAC ${esc(item.hsn_sac)}</div>` : ''}
-              ${item.tax_treatment !== 'TAXABLE' ? `<div class="text-gray-600">${esc(titleCase(item.tax_treatment))}</div>` : ''}</td>
+              ${item.tax_treatment !== 'TAXABLE' ? `<div class="text-gray-600">${esc(titleCase(item.tax_treatment))}</div>` : (item.tax_mode === 'INCLUSIVE' ? '<div class="text-gray-600">Price includes GST</div>' : '')}</td>
             <td class="py-1 text-right">${(item.quantity_milli / 1000).toString().replace(/\.?0+$/, '')} ${esc(item.unit)}</td>
             <td class="py-1 text-right">${money(item.unit_price_minor)}</td>
             <td class="py-1 text-right">${money(item.taxable_minor)}</td>

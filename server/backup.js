@@ -25,7 +25,9 @@ function requiredTables(migrationsDir) {
   for (const file of readdirSync(migrationsDir).filter(name => name.endsWith('.sql')).sort()) {
     const sql = readFileSync(join(migrationsDir, file), 'utf8');
     for (const match of sql.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
-      names.add(match[1]);
+      if (!match[1].endsWith('_new') && !match[1].endsWith('_temp')) {
+        names.add(match[1]);
+      }
     }
   }
   return names.size ? names : null;

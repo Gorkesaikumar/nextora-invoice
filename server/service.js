@@ -177,10 +177,10 @@ export async function createProduct(db, actor, input) {
   const id = randomUUID();
   await db.transaction(async tx => {
     await tx.query(`INSERT INTO inv.products(id,name,sku,description,category,unit,unit_price_minor,tax_treatment,
-        tax_rate_bp,hsn_sac,status,billing_interval,license_duration_months,validity_notes,created_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        tax_rate_bp,tax_mode,hsn_sac,status,billing_interval,license_duration_months,validity_notes,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [id, input.name, input.sku, input.description, input.category, input.unit, input.unit_price_minor,
-      input.tax_treatment, input.tax_rate_bp, input.hsn_sac, input.status, input.billing_interval,
+      input.tax_treatment, input.tax_rate_bp, input.tax_mode || null, input.hsn_sac, input.status, input.billing_interval,
       input.license_duration_months, input.validity_notes, actor.id]);
     await audit(tx, 'PRODUCT_CREATED', { actorId: actor.id, entityType: 'PRODUCT', entityId: id, metadata: { name: input.name } });
   });
@@ -193,10 +193,10 @@ export async function updateProduct(db, actor, id, input) {
     const existing = (await tx.query('SELECT * FROM inv.products WHERE id=$1 FOR UPDATE', [id])).rows[0];
     assert(existing, 404, 'That catalog entry does not exist.', 'NOT_FOUND');
     await tx.query(`UPDATE inv.products SET name=$2,sku=$3,description=$4,category=$5,unit=$6,unit_price_minor=$7,
-        tax_treatment=$8,tax_rate_bp=$9,hsn_sac=$10,status=$11,billing_interval=$12,license_duration_months=$13,
-        validity_notes=$14,updated_at=now() WHERE id=$1`,
+        tax_treatment=$8,tax_rate_bp=$9,tax_mode=$10,hsn_sac=$11,status=$12,billing_interval=$13,license_duration_months=$14,
+        validity_notes=$15,updated_at=now() WHERE id=$1`,
     [id, input.name, input.sku, input.description, input.category, input.unit, input.unit_price_minor,
-      input.tax_treatment, input.tax_rate_bp, input.hsn_sac, input.status, input.billing_interval,
+      input.tax_treatment, input.tax_rate_bp, input.tax_mode || null, input.hsn_sac, input.status, input.billing_interval,
       input.license_duration_months, input.validity_notes]);
     await audit(tx, 'PRODUCT_UPDATED', { actorId: actor.id, entityType: 'PRODUCT', entityId: id });
     return (await tx.query('SELECT * FROM inv.products WHERE id=$1', [id])).rows[0];
@@ -212,17 +212,19 @@ export async function updateSettings(db, actor, input) {
         business_name=$1, legal_name=$2, address=$3, email=$4, phone=$5, website=$6, gstin=$7, state_code=$8, pan=$9,
         bank_account_name=$10, bank_account_number=$11, bank_ifsc=$12, bank_name=$13, bank_branch=$14, upi_id=$15,
         signatory_name=$16, signatory_title=$17, default_quotation_validity_days=$18, default_payment_terms_days=$19,
-        default_currency=$20, rounding_mode=$21, default_tax_rate_bp=$22, reverse_charge=$23, quotation_prefix=$24,
-        invoice_prefix=$25, receipt_prefix=$26, credit_note_prefix=$27, terms=$28, quotation_terms=$29,
-        pdf_accent_color=$30, show_bank_details=$31, show_signatory=$32, show_amount_in_words=$33,
-        updated_at=now(), updated_by=$34 WHERE id=true`,
+        default_currency=$20, rounding_mode=$21, product_price_tax_mode=$22, default_tax_rate_bp=$23, reverse_charge=$24, quotation_prefix=$25,
+        invoice_prefix=$26, receipt_prefix=$27, credit_note_prefix=$28, terms=$29, quotation_terms=$30,
+        pdf_accent_color=$31, show_bank_details=$32, show_signatory=$33, show_amount_in_words=$34,
+        influencer_contract_prefix=COALESCE($35, 'NC/INF'),
+        updated_at=now(), updated_by=$36 WHERE id=true`,
     [input.business_name, input.legal_name, input.address, input.email, input.phone, input.website, input.gstin,
       input.state_code, input.pan, input.bank_account_name, input.bank_account_number, input.bank_ifsc,
       input.bank_name, input.bank_branch, input.upi_id, input.signatory_name, input.signatory_title,
       input.default_quotation_validity_days, input.default_payment_terms_days, input.default_currency,
-      input.rounding_mode, input.default_tax_rate_bp, input.reverse_charge, input.quotation_prefix,
+      input.rounding_mode, input.product_price_tax_mode || 'EXCLUSIVE', input.default_tax_rate_bp, input.reverse_charge, input.quotation_prefix,
       input.invoice_prefix, input.receipt_prefix, input.credit_note_prefix, input.terms, input.quotation_terms,
-      input.pdf_accent_color, input.show_bank_details, input.show_signatory, input.show_amount_in_words, actor.id]);
+      input.pdf_accent_color, input.show_bank_details, input.show_signatory, input.show_amount_in_words,
+      input.influencer_contract_prefix || 'NC/INF', actor.id]);
     await audit(tx, 'SETTINGS_UPDATED', { actorId: actor.id, entityType: 'SETTINGS',
       metadata: { gstin_set: input.gstin.length > 0, business_name: input.business_name } });
     return (await tx.query('SELECT * FROM inv.business_settings WHERE id=true')).rows[0];
@@ -242,12 +244,19 @@ export async function saveLogo(db, actor, base64) {
     await tx.query(`INSERT INTO inv.company_assets(name,png,sha256,updated_by,updated_at) VALUES('company_logo',$1,$2,$3,now())
       ON CONFLICT(name) DO UPDATE SET png=EXCLUDED.png, sha256=EXCLUDED.sha256, updated_by=EXCLUDED.updated_by, updated_at=now()`,
     [bytes, hash(bytes.toString('base64')), actor.id]);
+    await tx.query(`INSERT INTO inv.brand_assets(name,png,sha256,mime_type,width,height,updated_by,updated_at)
+      VALUES('company_logo',$1,$2,'image/png',$3,$4,$5,now())
+      ON CONFLICT(name) DO UPDATE SET png=EXCLUDED.png, sha256=EXCLUDED.sha256, mime_type=EXCLUDED.mime_type,
+        width=EXCLUDED.width, height=EXCLUDED.height, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+    [bytes, hash(bytes.toString('base64')), width, height, actor.id]).catch(() => {});
     await audit(tx, 'LOGO_UPDATED', { actorId: actor.id, entityType: 'SETTINGS', metadata: { bytes: bytes.length, width, height } });
   });
   return { width, height, bytes: bytes.length };
 }
 
 export async function logoBytes(db) {
+  const brandRow = (await db.query("SELECT png FROM inv.brand_assets WHERE name='company_logo'").catch(() => ({ rows: [] }))).rows[0];
+  if (brandRow?.png) return brandRow.png;
   const row = (await db.query("SELECT png FROM inv.company_assets WHERE name='company_logo'")).rows[0];
   return row?.png || null;
 }

@@ -45,6 +45,8 @@ export const INTERVALS = ['NONE', 'MONTHLY', 'QUARTERLY', 'HALF_YEARLY', 'YEARLY
 export const PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'UPI', 'CARD', 'CHEQUE', 'OTHER'];
 
 export const ROUNDING_MODES = ['NEAREST_RUPEE', 'NONE'];
+export const TAX_MODES = ['EXCLUSIVE', 'INCLUSIVE'];
+export const taxMode = z.enum(TAX_MODES);
 
 /* -------------------------------------------------------------------- shared */
 
@@ -60,6 +62,7 @@ export const lineItemSchema = z.object({
   discount_minor: minorUnits.default(0),
   tax_rate_bp: basisPoints.default(1800),
   tax_treatment: taxTreatment.default('TAXABLE'),
+  tax_mode: taxMode.nullable().optional().default(null),
 }).strict().refine(i => !(i.discount_bp > 0 && i.discount_minor > 0),
   'Use either a percentage discount or a fixed discount, not both')
   .refine(i => i.tax_treatment === 'TAXABLE' || i.tax_rate_bp === 0,
@@ -113,6 +116,7 @@ export const productSchema = z.object({
   unit_price_minor: minorUnits,
   tax_treatment: taxTreatment.default('TAXABLE'),
   tax_rate_bp: basisPoints.default(1800),
+  tax_mode: taxMode.nullable().optional().default(null),
   hsn_sac: z.union([hsnSac, z.literal('')]).default(''),
   status: z.enum(['ACTIVE', 'ARCHIVED']).default('ACTIVE'),
   billing_interval: z.enum(INTERVALS).default('NONE'),
@@ -144,6 +148,7 @@ const draftBody = {
   invoice_discount_bp: basisPoints.default(0),
   invoice_discount_minor: minorUnits.default(0),
   round_off_enabled: z.boolean().default(true),
+  tax_mode: taxMode.optional(),
   items: z.array(lineItemSchema).max(200).default([]),
   additional_charges: z.array(additionalChargeSchema).max(20).default([]),
   milestones: z.array(milestoneSchema).max(20).default([]),
@@ -188,6 +193,7 @@ export const paymentSchema = z.object({
 export const creditNoteSchema = z.object({
   reason: required(500),
   issue_date: day,
+  tax_mode: taxMode.nullable().optional().default(null),
   items: z.array(lineItemSchema).max(200).default([]),
   notes: multiline(1000).default(''),
 }).strict();
@@ -216,12 +222,14 @@ export const settingsSchema = z.object({
   default_payment_terms_days: z.number().int().min(0).max(365).default(15),
   default_currency: currency.default('INR'),
   rounding_mode: z.enum(ROUNDING_MODES).default('NEAREST_RUPEE'),
+  product_price_tax_mode: taxMode.default('EXCLUSIVE'),
   default_tax_rate_bp: basisPoints.default(1800),
   reverse_charge: z.boolean().default(false),
   quotation_prefix: required(12).default('NC/QTN'),
   invoice_prefix: required(12).default('NC/INV'),
   receipt_prefix: required(12).default('NC/RCP'),
   credit_note_prefix: required(12).default('NC/CRN'),
+  influencer_contract_prefix: optional(12).default('NC/INF'),
   terms: multiline(4000).default(''),
   quotation_terms: multiline(4000).default(''),
   pdf_accent_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Use a hex colour such as #00AEEF').default('#00AEEF'),
@@ -412,4 +420,152 @@ export const cleanupExecuteSchema = z.object({
   verification_token: z.string().trim().min(1, 'Verification token is required'),
   confirmation_phrase: z.string().trim().min(1, 'Confirmation phrase is required'),
   backup_dir: z.string().trim().max(1024).nullable().default(null),
+}).strict();
+
+/* ---------------------------------------------------------------- marketing */
+
+export const AGREEMENT_STATUSES = [
+  'DRAFT', 'PENDING_APPROVAL', 'SENT', 'ACCEPTED', 'SIGNED', 'ACTIVE', 'EXPIRED', 'TERMINATED'
+];
+export const COMMISSION_BASES = [
+  'NET_SALES_EX_GST', 'COLLECTED_NET_REFUNDS', 'GROSS_COLLECTED', 'CUSTOM'
+];
+export const COMMISSION_TAX_TERMS = [
+  'INCLUSIVE', 'EXCLUSIVE', 'EXEMPT', 'NOT_APPLICABLE'
+];
+
+export const DELIVERABLE_TYPES = [
+  'Instagram Reel',
+  'Instagram Story',
+  'Promotional Post',
+  'Product Demonstration',
+  'Product Review',
+  'Campaign Participation',
+  'Lead Generation',
+  'Product Awareness Activity',
+  'Other Agreed Activity'
+];
+
+export const influencerSchema = z.object({
+  legal_name: required(160),
+  display_name: required(160),
+  instagram_username: clean(100).refine(v => v.length > 0, 'Instagram username is required')
+    .transform(v => (v.startsWith('@') ? v.toLowerCase() : `@${v.toLowerCase()}`)),
+  instagram_url: clean(300).default('')
+    .refine(v => !v || /^https?:\/\/(www\.)?instagram\.com\/[A-Za-z0-9_.]+\/?$/i.test(v), 'Enter a valid Instagram profile URL'),
+  phone: clean(32).default('')
+    .refine(v => !v || /^[+]?[0-9\s\-()]{7,25}$/.test(v), 'Enter a valid phone number with country code'),
+  email: z.union([email, z.literal('')]).default(''),
+  address: multiline(600).default(''),
+  city: clean(100).default(''),
+  state_code: z.union([stateCode, z.literal('')]).default(''),
+  postal_code: clean(20).default('')
+    .refine(v => !v || /^[0-9]{5,10}$/.test(v), 'Enter a valid postal code'),
+  country: required(80).default('India'),
+  niche: clean(100).default(''),
+  follower_count: z.number().int().min(0).default(0),
+  other_social_links: clean(1000).default(''),
+  profile_image_url: clean(500).default(''),
+  internal_notes: multiline(2000).default(''),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).default('ACTIVE'),
+}).strict();
+
+export const deliverableSchema = z.object({
+  type: required(100),
+  quantity: z.number().int().min(1).max(1000).default(1),
+  frequency: clean(80).default('Monthly'),
+  deadline: clean(120).default(''),
+  required_tags: clean(200).default(''),
+  approval_requirements: clean(300).default(''),
+  performance_metrics: clean(300).default(''),
+}).strict();
+
+export const agreementDraftObject = z.object({
+  influencer_id: uuid,
+  title: required(200).default('Influencer Marketing & Revenue-Sharing Agreement — Nextora POS'),
+  brand_name: required(100).default('Nextora Creations'),
+  product_name: required(100).default('Nextora POS'),
+  commission_basis_points: z.number().int().min(1, 'Commission percentage must be greater than 0%').max(10000, 'Commission percentage cannot exceed 100%'),
+  commission_basis: z.enum(COMMISSION_BASES).default('NET_SALES_EX_GST'),
+  custom_basis_description: clean(500).default(''),
+  product_tax_mode: taxMode.default('EXCLUSIVE'),
+  commission_tax_terms: z.enum(COMMISSION_TAX_TERMS).default('EXCLUSIVE'),
+  influencer_gst_registered: z.boolean().default(false),
+  influencer_gstin: z.union([gstin, z.literal('')]).default(''),
+  withholding_tax_rate_bp: basisPoints.default(0),
+  withholding_section: clean(50).default('194H'),
+  start_date: day,
+  end_date: z.union([day, z.null()]).default(null),
+  is_indefinite: z.boolean().default(false),
+  payment_frequency: z.enum(['MONTHLY', 'QUARTERLY', 'BI_MONTHLY', 'ON_MILESTONE', 'CUSTOM']).default('MONTHLY'),
+  payment_due_days: z.number().int().min(0).max(365).default(15),
+  minimum_payout_minor: minorUnits.default(100000),
+  deliverables: z.array(deliverableSchema).default([]),
+  custom_clauses: z.record(z.string(), z.string()).default({}),
+  special_terms: multiline(4000).default(''),
+  signatory_name: clean(120).default(''),
+  signatory_title: clean(120).default(''),
+  influencer_signatory_name: clean(120).default(''),
+}).strict();
+
+export const agreementUpdateSchema = z.object({
+  title: clean(200).optional(),
+  brand_name: clean(100).optional(),
+  product_name: clean(100).optional(),
+  commission_basis_points: z.number().int().min(1, 'Commission percentage must be greater than 0%').max(10000, 'Commission percentage cannot exceed 100%').optional(),
+  commission_basis: z.enum(COMMISSION_BASES).optional(),
+  custom_basis_description: clean(500).optional(),
+  product_tax_mode: taxMode.optional(),
+  commission_tax_terms: z.enum(COMMISSION_TAX_TERMS).optional(),
+  influencer_gst_registered: z.boolean().optional(),
+  influencer_gstin: z.union([gstin, z.literal('')]).optional(),
+  withholding_tax_rate_bp: basisPoints.optional(),
+  withholding_section: clean(50).optional(),
+  start_date: day.optional(),
+  end_date: z.union([day, z.null()]).optional(),
+  is_indefinite: z.boolean().optional(),
+  payment_frequency: z.enum(['MONTHLY', 'QUARTERLY', 'BI_MONTHLY', 'ON_MILESTONE', 'CUSTOM']).optional(),
+  payment_due_days: z.number().int().min(0).max(365).optional(),
+  minimum_payout_minor: minorUnits.optional(),
+  deliverables: z.array(deliverableSchema).optional(),
+  custom_clauses: z.record(z.string(), z.string()).optional(),
+  special_terms: multiline(4000).optional(),
+  signatory_name: clean(120).optional(),
+  signatory_title: clean(120).optional(),
+  influencer_signatory_name: clean(120).optional(),
+}).strict();
+
+export const agreementDraftSchema = agreementDraftObject
+.refine(a => a.is_indefinite || (a.end_date !== null && a.end_date >= a.start_date),
+  'End date must be on or after start date unless duration is indefinite')
+.refine(a => !a.influencer_gst_registered || a.influencer_gstin.length > 0,
+  'GSTIN is required when influencer is registered for GST')
+.refine(a => a.commission_basis !== 'CUSTOM' || a.custom_basis_description.trim().length > 0,
+  'Please specify the custom calculation basis description');
+
+export const agreementStatusActionSchema = z.object({
+  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'TERMINATE', 'RENEW']),
+  reason: clean(500).default(''),
+  note: clean(500).default(''),
+  date: z.union([day, z.literal('')]).default(''),
+}).strict();
+
+export const salesImportApplySchema = z.object({
+  filename: required(200),
+  file_sha256: clean(64),
+  staged_rows: z.array(z.record(z.any())).min(1, 'At least one valid row is required to import.'),
+  influencer_mappings: z.record(z.string()).default({}),
+  allow_duplicates: z.boolean().default(false),
+  notes: clean(500).default(''),
+}).strict();
+
+export const saleStatusUpdateSchema = z.object({
+  status: z.enum(['PENDING', 'VERIFIED', 'APPROVED', 'PAID', 'REVERSED', 'DISPUTED']),
+  note: clean(500).default(''),
+}).strict();
+
+export const bulkSaleStatusUpdateSchema = z.object({
+  ids: z.array(uuid).min(1, 'Select at least one sale record'),
+  status: z.enum(['PENDING', 'VERIFIED', 'APPROVED', 'PAID', 'REVERSED', 'DISPUTED']),
+  note: clean(500).default(''),
 }).strict();

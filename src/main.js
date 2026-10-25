@@ -14,6 +14,7 @@ import * as tracker from './views/tracker.js';
 import * as reports from './views/reports.js';
 import * as settings from './views/settings.js';
 import * as cleanup from './views/cleanup.js';
+import * as marketing from './views/marketing.js';
 
 const NAV = [
   { href: '#/dashboard', label: 'Dashboard', icon: 'space_dashboard' },
@@ -23,6 +24,17 @@ const NAV = [
   { href: '#/products', label: 'Products & Services', icon: 'inventory_2' },
   { href: '#/payments', label: 'Payments', icon: 'payments' },
   { href: '#/tracker', label: 'POS Customers', icon: 'loyalty' },
+  {
+    href: '#/marketing',
+    label: 'Marketing & Partnerships',
+    icon: 'campaign',
+    subitems: [
+      { href: '#/marketing/influencers', label: 'Influencers' },
+      { href: '#/marketing/contracts', label: 'Contracts & Agreements' },
+      { href: '#/marketing/import', label: 'Import Sales Excel' },
+      { href: '#/marketing/reports', label: 'Influencer Sales Reports' },
+    ],
+  },
   { href: '#/reports', label: 'Reports', icon: 'bar_chart' },
   { href: '#/settings', label: 'Settings', icon: 'settings' },
 ];
@@ -55,6 +67,7 @@ const ROUTES = {
   payments: { module: payments, label: 'Payments' },
   tracker: { module: tracker, label: 'POS Customers' },
   reports: { module: reports, label: 'Reports' },
+  marketing: { module: marketing, label: 'Marketing & Partnerships' },
   settings: { module: settings, label: 'Settings' },
   cleanup: { module: cleanup, label: 'Business Data Cleanup' },
 };
@@ -119,10 +132,22 @@ function sidebarInner(activeKey, user, roleLabel) {
     </div>
     <nav class="flex-1 overflow-y-auto py-3" aria-label="Main">
       ${NAV.map(item => {
-        const active = item.href === `#/${activeKey}`;
-        return `<a href="${item.href}" class="flex items-center gap-3 border-l-2 px-5 py-2.5 text-sm transition-colors
-          ${active ? 'border-cyan-accent bg-surface-dim font-semibold text-on-surface' : 'border-transparent text-on-surface-variant hover:bg-surface-dim hover:text-on-surface'}">
-          ${icon(item.icon, '!text-[20px]')}<span>${esc(item.label)}</span></a>`;
+        const active = item.href === `#/${activeKey}` || (item.subitems && activeKey === 'marketing');
+        return `
+          <a href="${item.href}" class="flex items-center gap-3 border-l-2 px-5 py-2.5 text-sm transition-colors
+            ${active ? 'border-cyan-accent bg-surface-dim font-semibold text-on-surface' : 'border-transparent text-on-surface-variant hover:bg-surface-dim hover:text-on-surface'}">
+            ${icon(item.icon, '!text-[20px]')}<span>${esc(item.label)}</span>
+          </a>
+          ${item.subitems && active ? `
+            <div class="ml-9 border-l border-outline my-1 pl-3 space-y-1">
+              ${item.subitems.map(sub => `
+                <a href="${sub.href}" class="block py-1 text-xs text-on-surface-variant hover:text-on-surface transition-colors">
+                  ${esc(sub.label)}
+                </a>
+              `).join('')}
+            </div>
+          ` : ''}
+        `;
       }).join('')}
     </nav>
     <div class="border-t border-outline px-5 py-4">

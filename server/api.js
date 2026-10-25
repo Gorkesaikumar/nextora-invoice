@@ -8,6 +8,8 @@ import {
   privateShareSchema, publicShareSchema, shareUpdateSchema, importPreviewSchema, importApplySchema,
   subscriptionSchema, FIELD_TYPES, SUBSCRIPTION_STATUSES, ROLES,
   cleanupPreviewSchema, cleanupExportSchema, cleanupExecuteSchema,
+  influencerSchema, agreementDraftSchema, agreementUpdateSchema, agreementStatusActionSchema,
+  salesImportApplySchema, saleStatusUpdateSchema, bulkSaleStatusUpdateSchema,
 } from './domain.js';
 import { authenticate, checkPassword, hashPassword, hash, token, sessionCookie, rateLimit,
   canWrite, canManageSettings } from './auth.js';
@@ -53,6 +55,21 @@ import { createBackup, restoreBackup, inspectDatabase } from './backup.js';
 import {
   inspectCleanupData, previewCleanup, generateExportArchive, executeCleanup,
 } from './cleanup.js';
+import {
+  listInfluencers, getInfluencer, createInfluencer, updateInfluencer, checkInfluencerDuplicates,
+  listAgreements, getAgreement, createAgreement, updateAgreementDraft, transitionAgreementStatus,
+  duplicateAgreement, buildContractSnapshot, recordPdfGenerated, marketingDashboard,
+  saveBrandLogo, brandLogoBytes,
+} from './marketing.js';
+import { renderContractPdf } from './contract-pdf.js';
+import {
+  generateSalesTemplate, parseAndValidateSalesFile, confirmSalesImport, listSalesBatches,
+  getSalesDashboardMetrics, listSalesRecords, updateSaleRecordStatus, bulkUpdateSalesStatus,
+  exportSalesToExcel,
+} from './influencer-sales.js';
+import {
+  renderInfluencerSalesReportPdf, renderConsolidatedSalesReportPdf,
+} from './sales-report-pdf.js';
 
 const baseHeaders = {
   'Cache-Control': 'no-store, private',
@@ -385,6 +402,7 @@ export function createAPI(db, config) {
           states: STATE_LIST,
           gst_rate_slabs: GST_RATE_SLABS,
           tax_treatments: TAX_TREATMENTS,
+          tax_modes: ['EXCLUSIVE', 'INCLUSIVE'],
           payment_methods: PAYMENT_METHODS,
           billing_intervals: INTERVALS,
           rounding_modes: ROUNDING_MODES,
@@ -393,11 +411,14 @@ export function createAPI(db, config) {
             quotation: previewNumber(business.quotation_prefix, new Date()),
             invoice: previewNumber(business.invoice_prefix, new Date()),
             receipt: previewNumber(business.receipt_prefix, new Date()),
+            influencer_agreement: previewNumber(business.influencer_contract_prefix || 'NC/INF', new Date()),
           },
           business: { business_name: business.business_name, state_code: business.state_code,
             gstin: business.gstin, default_payment_terms_days: business.default_payment_terms_days,
             default_quotation_validity_days: business.default_quotation_validity_days,
             default_tax_rate_bp: business.default_tax_rate_bp, rounding_mode: business.rounding_mode,
+            product_price_tax_mode: business.product_price_tax_mode || 'EXCLUSIVE',
+            influencer_contract_prefix: business.influencer_contract_prefix || 'NC/INF',
             terms: business.terms, quotation_terms: business.quotation_terms },
         });
       }
@@ -411,6 +432,19 @@ export function createAPI(db, config) {
       if (path === '/api/settings/logo' && method === 'POST') {
         const input = await body(request, z.object({ png: z.string().min(24).max(900000) }).strict());
         return json({ logo: await saveLogo(db, actor, input.png) });
+      }
+      if ((path === '/api/settings/product-logo' || path === '/api/marketing/product-logo') && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, z.object({ logo: z.string().min(24).max(1800000) }).strict());
+        return json({ logo: await saveBrandLogo(db, actor, input.logo, 'product_logo') });
+      }
+      if ((path === '/api/settings/product-logo' || path === '/api/marketing/product-logo') && method === 'GET') {
+        const asset = await brandLogoBytes(db, 'product_logo');
+        if (!asset?.bytes) return new Response('Not found', { status: 404 });
+        return new Response(asset.bytes, {
+          status: 200,
+          headers: { ...baseHeaders, 'Content-Type': asset.mimeType, 'Cache-Control': 'no-cache' }
+        });
       }
       if (path === '/api/backup/status' && method === 'GET') {
         requireManager(actor);
@@ -1079,6 +1113,357 @@ export function createAPI(db, config) {
         }
       }
 
+      /* ------------------------------------------- marketing & partnerships */
+
+      if (path === '/api/marketing/dashboard' && method === 'GET') {
+        requireManager(actor);
+        return json(await marketingDashboard(db));
+      }
+
+      if (path === '/api/marketing/influencers' && method === 'GET') {
+        requireManager(actor);
+        return json(await listInfluencers(db, {
+          search: url.searchParams.get('search') || '',
+          status: url.searchParams.get('status') || '',
+          page: url.searchParams.get('page') || 1,
+          limit: url.searchParams.get('limit') || 25,
+        }));
+      }
+
+      if (path === '/api/marketing/influencers/check-duplicates' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, z.object({
+          legal_name: z.string().optional(),
+          display_name: z.string().optional(),
+          instagram_username: z.string().optional(),
+          email: z.string().optional(),
+          phone: z.string().optional(),
+          exclude_id: uuid.nullable().optional().default(null),
+        }).strict());
+        return json(await checkInfluencerDuplicates(db, input, input.exclude_id));
+      }
+
+      if (path === '/api/marketing/influencers' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, influencerSchema);
+        const result = await createInfluencer(db, actor, input);
+        return json(result, 201);
+      }
+
+      const influencerMatch = path.match(/^\/api\/marketing\/influencers\/([0-9a-fA-F-]+)$/);
+      if (influencerMatch) {
+        requireManager(actor);
+        const id = uuid.parse(influencerMatch[1]);
+        if (method === 'GET') {
+          return json({ influencer: await getInfluencer(db, id) });
+        }
+        if (method === 'PATCH') {
+          const input = await body(request, influencerSchema.partial());
+          return json(await updateInfluencer(db, actor, id, input));
+        }
+      }
+
+      if (path === '/api/marketing/agreements' && method === 'GET') {
+        requireManager(actor);
+        return json(await listAgreements(db, {
+          influencerId: url.searchParams.get('influencer_id') || null,
+          status: url.searchParams.get('status') || '',
+          search: url.searchParams.get('search') || '',
+          page: url.searchParams.get('page') || 1,
+          limit: url.searchParams.get('limit') || 25,
+        }));
+      }
+
+      if (path === '/api/marketing/agreements' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, agreementDraftSchema);
+        return json({ agreement: await createAgreement(db, actor, input) }, 201);
+      }
+
+      const agreementMatch = path.match(/^\/api\/marketing\/agreements\/([0-9a-fA-F-]+)(?:\/([a-z-]+))?$/);
+      if (agreementMatch) {
+        requireManager(actor);
+        const id = uuid.parse(agreementMatch[1]);
+        const action = agreementMatch[2];
+
+        if (!action && method === 'GET') {
+          return json({ agreement: await getAgreement(db, id) });
+        }
+        if (!action && method === 'PATCH') {
+          const input = await body(request, agreementUpdateSchema);
+          return json({ agreement: await updateAgreementDraft(db, actor, id, input) });
+        }
+        if (action === 'status' && method === 'POST') {
+          const input = await body(request, agreementStatusActionSchema);
+          return json({ agreement: await transitionAgreementStatus(db, actor, id, input) });
+        }
+        if (action === 'duplicate' && method === 'POST') {
+          return json({ agreement: await duplicateAgreement(db, actor, id) }, 201);
+        }
+        if (action === 'preview' && method === 'GET') {
+          return json({ snapshot: await buildContractSnapshot(db, id) });
+        }
+        if (action === 'generate-pdf' && method === 'POST') {
+          const snapshot = await buildContractSnapshot(db, id);
+          await recordPdfGenerated(db, actor, id, snapshot);
+          const [companyLogo, productLogo] = await Promise.all([
+            brandLogoBytes(db, 'company_logo').catch(() => null),
+            brandLogoBytes(db, 'product_logo').catch(() => null),
+          ]);
+          const bytes = await renderContractPdf(snapshot, { companyLogo, productLogo });
+          return json({
+            success: true,
+            contract_number: snapshot.contract_number,
+            pdf_generated_at: snapshot.pdf_generated_at,
+            bytes_length: bytes.length,
+          });
+        }
+        if (action === 'pdf' && method === 'GET') {
+          const agreement = await getAgreement(db, id);
+          const snapshot = agreement.snapshot
+            ? (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot)
+            : await buildContractSnapshot(db, id);
+
+          const [companyLogo, productLogo] = await Promise.all([
+            brandLogoBytes(db, 'company_logo').catch(() => null),
+            brandLogoBytes(db, 'product_logo').catch(() => null),
+          ]);
+          const bytes = await renderContractPdf(snapshot, { companyLogo, productLogo });
+          const safeContractNum = (agreement.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+          const isView = url.searchParams.get('view') === 'true';
+
+          await audit(db, 'AGREEMENT_PDF_DOWNLOADED', {
+            actorId: actor.id, entityType: 'AGREEMENT', entityId: id,
+            metadata: { contract_number: agreement.contract_number, is_view: isView }
+          });
+
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Type': 'application/pdf',
+              'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="${safeContractNum}.pdf"`,
+            },
+          });
+        }
+      }
+
+      /* ------------------------------------------- marketing sales tracking & import */
+      if (path === '/api/marketing/sales/template' && method === 'GET') {
+        requireManager(actor);
+        return fileResponse('nextora_influencer_sales_template.xlsx', await generateSalesTemplate());
+      }
+
+      if (path === '/api/marketing/sales/preview-import' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, importPreviewSchema, 10000000);
+        const buffer = Buffer.from(input.content_base64, 'base64');
+        return json(await parseAndValidateSalesFile(db, buffer, input.filename));
+      }
+
+      if (path === '/api/marketing/sales/confirm-import' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, salesImportApplySchema, 10000000);
+        return json(await confirmSalesImport(db, actor, input));
+      }
+
+      if (path === '/api/marketing/sales/batches' && method === 'GET') {
+        requireManager(actor);
+        const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+        return json(await listSalesBatches(db, { page }));
+      }
+
+      if (path === '/api/marketing/sales/dashboard' && method === 'GET') {
+        requireManager(actor);
+        const fromDate = url.searchParams.get('fromDate') || '';
+        const toDate = url.searchParams.get('toDate') || '';
+        const productId = url.searchParams.get('productId') || '';
+        const influencerId = url.searchParams.get('influencerId') || '';
+        return json(await getSalesDashboardMetrics(db, { fromDate, toDate, productId, influencerId }));
+      }
+
+      if (path === '/api/marketing/sales' && method === 'GET') {
+        requireManager(actor);
+        const influencerId = url.searchParams.get('influencerId') || null;
+        const search = url.searchParams.get('search') || '';
+        const fromDate = url.searchParams.get('fromDate') || '';
+        const toDate = url.searchParams.get('toDate') || '';
+        const productId = url.searchParams.get('productId') || '';
+        const status = url.searchParams.get('status') || '';
+        const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+        const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '25', 10)));
+        const sort = url.searchParams.get('sort') || 'purchased_date_desc';
+        return json(await listSalesRecords(db, { influencerId, search, fromDate, toDate, productId, status, page, limit, sort }));
+      }
+
+      if (path === '/api/marketing/sales/export.xlsx' && method === 'GET') {
+        requireManager(actor);
+        const influencerId = url.searchParams.get('influencerId') || null;
+        const search = url.searchParams.get('search') || '';
+        const fromDate = url.searchParams.get('fromDate') || '';
+        const toDate = url.searchParams.get('toDate') || '';
+        const productId = url.searchParams.get('productId') || '';
+        const status = url.searchParams.get('status') || '';
+        const { records } = await listSalesRecords(db, { influencerId, search, fromDate, toDate, productId, status, page: 1, limit: 10000 });
+        const buf = await exportSalesToExcel({
+          records,
+          filters: { search, fromDate, toDate, productId, status }
+        });
+        const monthStr = new Date().toISOString().slice(0, 7);
+        await audit(db, 'SALES_EXCEL_EXPORTED', {
+          actorId: actor.id, entityType: 'SALES_EXPORT',
+          metadata: { record_count: records.length, filters: { influencerId, search, fromDate, toDate, productId, status } }
+        });
+        return fileResponse(`nextora_influencer_sales_${monthStr}.xlsx`, buf);
+      }
+
+      if (path === '/api/marketing/sales/bulk-status' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, bulkSaleStatusUpdateSchema);
+        return json(await bulkUpdateSalesStatus(db, actor, input));
+      }
+
+      const saleStatusMatch = path.match(/^\/api\/marketing\/sales\/([0-9a-fA-F-]+)\/status$/);
+      if (saleStatusMatch && method === 'POST') {
+        requireManager(actor);
+        const id = uuid.parse(saleStatusMatch[1]);
+        const input = await body(request, saleStatusUpdateSchema);
+        return json(await updateSaleRecordStatus(db, actor, id, input));
+      }
+
+      if (path === '/api/marketing/sales/consolidated-report.pdf' && method === 'GET') {
+        requireManager(actor);
+        const fromDate = url.searchParams.get('fromDate') || '';
+        const toDate = url.searchParams.get('toDate') || '';
+        const productId = url.searchParams.get('productId') || '';
+        const data = await getSalesDashboardMetrics(db, { fromDate, toDate, productId });
+        const [companyLogo, productLogo] = await Promise.all([
+          brandLogoBytes(db, 'company_logo').catch(() => null),
+          brandLogoBytes(db, 'product_logo').catch(() => null),
+        ]);
+        const bytes = await renderConsolidatedSalesReportPdf(data, { companyLogo, productLogo });
+        const monthStr = new Date().toISOString().slice(0, 7);
+        const isView = url.searchParams.get('view') === 'true';
+
+        await audit(db, 'CONSOLIDATED_SALES_REPORT_DOWNLOADED', {
+          actorId: actor.id, entityType: 'SALES_REPORT',
+          metadata: { fromDate, toDate, productId, is_view: isView }
+        });
+
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            ...baseHeaders,
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="nextora_all_influencers_${monthStr}.pdf"`,
+          },
+        });
+      }
+
+      const influencerSalesMatch = path.match(/^\/api\/marketing\/influencers\/([0-9a-fA-F-]+)\/sales(?:\/(export\.xlsx|report\.pdf))?$/);
+      if (influencerSalesMatch) {
+        requireManager(actor);
+        const infId = uuid.parse(influencerSalesMatch[1]);
+        const action = influencerSalesMatch[2];
+        const influencer = await getInfluencer(db, infId);
+
+        if (!action && method === 'GET') {
+          const search = url.searchParams.get('search') || '';
+          const fromDate = url.searchParams.get('fromDate') || '';
+          const toDate = url.searchParams.get('toDate') || '';
+          const productId = url.searchParams.get('productId') || '';
+          const status = url.searchParams.get('status') || '';
+          const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+          const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '25', 10)));
+          const sort = url.searchParams.get('sort') || 'purchased_date_desc';
+          const salesData = await listSalesRecords(db, { influencerId: infId, search, fromDate, toDate, productId, status, page, limit, sort });
+          return json({ influencer, ...salesData });
+        }
+
+        if (action === 'export.xlsx' && method === 'GET') {
+          const search = url.searchParams.get('search') || '';
+          const fromDate = url.searchParams.get('fromDate') || '';
+          const toDate = url.searchParams.get('toDate') || '';
+          const productId = url.searchParams.get('productId') || '';
+          const status = url.searchParams.get('status') || '';
+          const { records } = await listSalesRecords(db, { influencerId: infId, search, fromDate, toDate, productId, status, page: 1, limit: 10000 });
+          const buf = await exportSalesToExcel({
+            records,
+            influencer,
+            filters: { search, fromDate, toDate, productId, status }
+          });
+          const safeName = (influencer.display_name || 'influencer').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const monthStr = new Date().toISOString().slice(0, 7);
+
+          await audit(db, 'INFLUENCER_SALES_EXCEL_EXPORTED', {
+            actorId: actor.id, entityType: 'SALES_EXPORT', entityId: infId,
+            metadata: { influencer_id: infId, record_count: records.length }
+          });
+
+          return fileResponse(`nextora_influencer_sales_${safeName}_${monthStr}.xlsx`, buf);
+        }
+
+        if (action === 'report.pdf' && method === 'GET') {
+          const fromDate = url.searchParams.get('fromDate') || '';
+          const toDate = url.searchParams.get('toDate') || '';
+          const productId = url.searchParams.get('productId') || '';
+          const { records } = await listSalesRecords(db, { influencerId: infId, fromDate, toDate, productId, page: 1, limit: 10000 });
+
+          const { rows: agRows } = await db.query(
+            `SELECT * FROM inv.influencer_agreements WHERE influencer_id = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [infId]
+          );
+          const agreement = agRows[0] || null;
+
+          const totalSales = records.length;
+          const verifiedRev = records.reduce((sum, r) => sum + (r.is_revenue_verified ? (r.eligible_revenue_minor || 0) : 0), 0);
+          const calcComm = records.reduce((sum, r) => sum + (r.is_revenue_verified ? (r.calculated_commission_minor || 0) : 0), 0);
+          const pendingComm = records.reduce((sum, r) => sum + (['PENDING', 'VERIFIED'].includes(r.commission_status) ? (r.calculated_commission_minor || 0) : 0), 0);
+          const approvedComm = records.reduce((sum, r) => sum + (r.commission_status === 'APPROVED' ? (r.calculated_commission_minor || 0) : 0), 0);
+          const paidComm = records.reduce((sum, r) => sum + (r.commission_status === 'PAID' ? (r.calculated_commission_minor || 0) : 0), 0);
+
+          const reportData = {
+            report_number: `REP-${infId.slice(0, 8).toUpperCase()}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
+            influencer,
+            agreement,
+            period_label: fromDate && toDate ? `${fromDate} to ${toDate}` : 'All Attributed Sales',
+            summary: {
+              total_sales: totalSales,
+              verified_revenue_minor: verifiedRev,
+              calculated_commission_minor: calcComm,
+              pending_commission_minor: pendingComm,
+              approved_commission_minor: approvedComm,
+              paid_commission_minor: paidComm,
+            },
+            records,
+          };
+
+          const [companyLogo, productLogo] = await Promise.all([
+            brandLogoBytes(db, 'company_logo').catch(() => null),
+            brandLogoBytes(db, 'product_logo').catch(() => null),
+          ]);
+
+          const bytes = await renderInfluencerSalesReportPdf(reportData, { companyLogo, productLogo });
+          const safeName = (influencer.display_name || 'influencer').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const monthStr = new Date().toISOString().slice(0, 7);
+          const isView = url.searchParams.get('view') === 'true';
+
+          await audit(db, 'INFLUENCER_SALES_REPORT_DOWNLOADED', {
+            actorId: actor.id, entityType: 'SALES_REPORT', entityId: infId,
+            metadata: { influencer_id: infId, record_count: records.length, is_view: isView }
+          });
+
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Type': 'application/pdf',
+              'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="nextora_influencer_report_${safeName}_${monthStr}.pdf"`,
+            },
+          });
+        }
+      }
+
       throw new HttpError(404, 'Endpoint not found.', 'NOT_FOUND');
     } catch (error) {
       if (error instanceof ZodError) {
@@ -1123,11 +1508,12 @@ export function createAPI(db, config) {
       assert(items.length > 0, 400, 'This quotation has no line items.', 'EMPTY_DOCUMENT');
       const business = await settings(tx);
       const dueDate = input.due_date || addDays(input.issue_date, quotation.payment_terms_days);
+      const taxMode = quotation.tax_mode || 'EXCLUSIVE';
       const lines = input.items || items.map(item => ({
         product_id: item.product_id, description: item.description, category: item.category, hsn_sac: item.hsn_sac,
         unit: item.unit, quantity_milli: item.quantity_milli, unit_price_minor: item.unit_price_minor,
         discount_bp: item.discount_bp, discount_minor: item.discount_minor, tax_rate_bp: item.tax_rate_bp,
-        tax_treatment: item.tax_treatment,
+        tax_treatment: item.tax_treatment, tax_mode: item.tax_mode || taxMode,
       }));
       const invoiceId = randomUUID();
       const computed = computeDocument({
@@ -1137,29 +1523,31 @@ export function createAPI(db, config) {
         invoice_discount_minor: input.items ? 0 : quotation.invoice_discount_minor,
         supply_type: quotation.supply_type,
         round_off_enabled: quotation.round_off_enabled,
+        tax_mode: taxMode,
       });
       const totals = { ...computed.totals, amount_in_words: amountInWords(computed.totals.grand_total_minor) };
       await tx.query(`INSERT INTO inv.invoices(id,client_id,quotation_id,status,title,description,scope_of_work,inclusions,
           exclusions,assumptions,warranty_terms,delivery_timeline,notes,terms,issue_date,due_date,
           place_of_supply_state_code,supply_type,payment_terms_days,payment_terms,project_reference,
-          invoice_discount_bp,invoice_discount_minor,round_off_enabled,additional_charges,totals,created_by)
-        VALUES($1,$2,$3,'DRAFT',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+          invoice_discount_bp,invoice_discount_minor,round_off_enabled,tax_mode,additional_charges,totals,created_by)
+        VALUES($1,$2,$3,'DRAFT',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
       [invoiceId, quotation.client_id, id, quotation.title, quotation.description, quotation.scope_of_work,
         quotation.inclusions, quotation.exclusions, quotation.assumptions, quotation.warranty_terms,
         quotation.delivery_timeline, quotation.notes, quotation.terms, input.issue_date, dueDate,
         quotation.place_of_supply_state_code, quotation.supply_type, quotation.payment_terms_days,
         quotation.payment_terms, quotation.quotation_number, quotation.invoice_discount_bp,
-        quotation.invoice_discount_minor, quotation.round_off_enabled,
+        quotation.invoice_discount_minor, quotation.round_off_enabled, taxMode,
         JSON.stringify(input.items ? [] : quotation.additional_charges), JSON.stringify(totals), actor.id]);
       for (const [index, line] of computed.lines.entries()) {
         await tx.query(`INSERT INTO inv.invoice_items(id,invoice_id,position,product_id,description,category,hsn_sac,unit,
             quantity_milli,unit_price_minor,discount_bp,discount_minor,tax_rate_bp,tax_treatment,gross_minor,
-            item_discount_minor,invoice_discount_minor,taxable_minor,cgst_minor,sgst_minor,igst_minor,tax_minor,total_minor)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+            item_discount_minor,invoice_discount_minor,taxable_minor,cgst_minor,sgst_minor,igst_minor,tax_minor,total_minor,tax_mode)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
         [randomUUID(), invoiceId, index, line.product_id, line.description, line.category, line.hsn_sac, line.unit,
           line.quantity_milli, line.unit_price_minor, line.discount_bp, line.discount_minor, line.tax_rate_bp,
           line.tax_treatment, line.gross_minor, line.item_discount_minor, line.invoice_discount_minor,
-          line.taxable_minor, line.cgst_minor, line.sgst_minor, line.igst_minor, line.tax_minor, line.total_minor]);
+          line.taxable_minor, line.cgst_minor, line.sgst_minor, line.igst_minor, line.tax_minor, line.total_minor,
+          line.tax_mode || taxMode]);
       }
       const claimed = await tx.query(
         'UPDATE inv.quotations SET converted_invoice_id=$2, updated_at=now() WHERE id=$1 AND converted_invoice_id IS NULL RETURNING id',

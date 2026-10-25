@@ -54,6 +54,15 @@ async function renderGrid(container, params, ctx) {
 
   const { can_write: canWrite, can_manage: canManage, columns, custom_fields: customFields } = reference;
   const visible = columns.filter(column => column.visible || column.key === 'serial');
+
+  let products = [];
+  try {
+    const productsData = await api.get('/api/products?limit=100&status=ACTIVE');
+    products = (productsData?.products || []).map(p => ({ value: p.id, label: p.name }));
+  } catch {
+    products = [];
+  }
+
   const data = await api.get(`/api/tracker/customers${query({ ...state.filters, page: state.page, limit: 25,
     sort: state.sort, direction: state.direction })}`);
 
@@ -122,8 +131,7 @@ async function renderGrid(container, params, ctx) {
     subtitle: 'S.No. renumbers for the current filter and sort; it is not the record identity.',
     body: `${toolbar(`
       ${field({ label: 'Search', name: 'tracker-search', value: state.filters.search || '', placeholder: 'Name, business, address, product, custom field…', className: 'w-64' })}
-      ${filterField('Product', 'product_id', [{ value: '', label: 'Any product' },
-    ...reference.metrics.by_subscription ? [] : [], ...[]])}
+      ${filterField('Product', 'product_id', [{ value: '', label: 'Any product' }, ...products])}
       ${filterField('Employee', 'employee_id', [{ value: '', label: 'Any employee' }, ...options(employees, 'name')])}
       ${filterField('Subscription', 'subscription', SUBSCRIPTIONS)}
       ${filterField('Status', 'status', STATUSES)}
@@ -171,7 +179,7 @@ async function renderGrid(container, params, ctx) {
       ${canManage ? button({ label: 'Shares', action: 'shares-open' }) : ''}
     </div>`;
 
-  bindGrid(container, ctx, { canWrite, canManage, columns, visible, data, plans, employees, customFields });
+  bindGrid(container, ctx, { canWrite, canManage, columns, visible, data, plans, employees, products, customFields });
 }
 
 function cellText(row, column) {
@@ -181,7 +189,7 @@ function cellText(row, column) {
 }
 
 function bindGrid(container, ctx, contextData) {
-  const { canWrite, canManage, columns, plans, customFields } = contextData;
+  const { canWrite, canManage, columns, plans = [], employees = [], products = [], customFields } = contextData;
   const rerender = () => ctx.rerender();
 
   ctx.on('sort', trigger => {
@@ -270,11 +278,21 @@ function bindGrid(container, ctx, contextData) {
   });
 
   ctx.on('row-add', () => {
-    state.draft = { id: 'new', name: '', business_name: '', address: '', employee_id: employees()[0]?.id || '',
-      purchase_date: new Date().toISOString().slice(0, 10), product_id: '', plan_id: plans()[0]?.id || '', expiry_date: '', remarks: '' };
-    openCustomerModal(ctx, { canWrite, plans: plans(), employees: employees(), draft: state.draft });
+    state.draft = {
+      id: 'new',
+      name: '',
+      business_name: '',
+      address: '',
+      employee_id: employees[0]?.id || '',
+      purchase_date: new Date().toISOString().slice(0, 10),
+      product_id: products[0]?.value || '',
+      plan_id: plans[0]?.id || '',
+      expiry_date: '',
+      remarks: '',
+    };
+    openCustomerModal(ctx, { canWrite, plans, employees, products, draft: state.draft });
   });
-  ctx.on('customer-new', () => openCustomerModal(ctx, { canWrite, plans: plans(), employees: employees() }));
+  ctx.on('customer-new', () => openCustomerModal(ctx, { canWrite, plans, employees, products }));
 
   ctx.on('select-row', trigger => {
     if (trigger.checked) state.selected.add(trigger.dataset.id); else state.selected.delete(trigger.dataset.id);
@@ -316,9 +334,6 @@ function bindGrid(container, ctx, contextData) {
   ctx.on('shares-open', () => ctx.navigate('#/shares'));
 }
 
-function employees() { return window.__trackerEmployees || []; }
-function plans() { return window.__trackerPlans || []; }
-
 function confirmInline(title, message, action) {
   modal({
     title, body: `<p class="text-sm text-on-surface-variant">${esc(message)}</p>`,
@@ -329,8 +344,12 @@ function confirmInline(title, message, action) {
 
 /* ---------------------------------------------------------------- customer form */
 
-export function openCustomerModal(ctx, { plans: planList, employees: employeeList, draft = null }) {
+export function openCustomerModal(ctx, { canWrite = true, plans = [], employees = [], products = [], draft = null } = {}) {
   const today = new Date().toISOString().slice(0, 10);
+  const employeeList = Array.isArray(employees) ? employees : (typeof employees === 'function' ? employees() : []);
+  const planList = Array.isArray(plans) ? plans : (typeof plans === 'function' ? plans() : []);
+  const productList = Array.isArray(products) ? products : (typeof products === 'function' ? products() : []);
+
   const node = modal({
     title: draft ? 'Add a customer row' : 'Add customer',
     size: 'wide',
@@ -344,7 +363,7 @@ export function openCustomerModal(ctx, { plans: planList, employees: employeeLis
     options: [{ value: '', label: 'Not assigned' }, ...employeeList.map(e => ({ value: e.id, label: e.name }))] })}
       ${field({ label: 'Date of Purchase', name: 'purchase_date', type: 'date', value: draft?.purchase_date || today })}
       ${field({ label: 'Product', name: 'product_id', type: 'select', value: draft?.product_id || '',
-    options: [{ value: '', label: 'Not selected' }, ...(window.__trackerProducts || [])] })}
+    options: [{ value: '', label: 'Not selected' }, ...productList.map(p => ({ value: p.value || p.id, label: p.label || p.name }))] })}
       ${field({ label: 'Subscription', name: 'plan_id', type: 'select', value: draft?.plan_id || '',
     options: [{ value: '', label: 'Not selected' }, ...planList.map(p => ({ value: p.id, label: `${p.label}${p.is_lifetime ? ' (lifetime)' : ` · ${p.duration_months} months`}` }))] })}
       ${field({ label: 'Date of Expiry', name: 'expiry_date', type: 'date', value: draft?.expiry_date || '',
@@ -357,11 +376,27 @@ export function openCustomerModal(ctx, { plans: planList, employees: employeeLis
     </form>`,
     footer: `${button({ label: 'Cancel', action: 'close-modal' })}${button({ label: 'Save customer', action: 'customer-save', variant: 'primary' })}`,
   });
+
+  let isSaving = false;
   ctx.on('customer-save', async () => {
-    const form = new FormData(node.querySelector('#customer-form'));
+    if (isSaving) return;
+    const formEl = node.querySelector('#customer-form');
+    if (!formEl) return;
+    if (typeof formEl.reportValidity === 'function' && !formEl.reportValidity()) return;
+
+    const form = new FormData(formEl);
+    const name = String(form.get('name') || '').trim();
+    if (!name) {
+      toast('Customer Name is required.', 'danger');
+      formEl.querySelector('[name="name"]')?.focus();
+      return;
+    }
+
     const payload = {
-      name: String(form.get('name') || '').trim(), business_name: String(form.get('business_name') || ''),
-      address: String(form.get('address') || ''), remarks: String(form.get('remarks') || ''),
+      name,
+      business_name: String(form.get('business_name') || '').trim(),
+      address: String(form.get('address') || '').trim(),
+      remarks: String(form.get('remarks') || '').trim(),
       employee_id: String(form.get('employee_id') || '') || null,
     };
     const productId = String(form.get('product_id') || '');
@@ -369,18 +404,36 @@ export function openCustomerModal(ctx, { plans: planList, employees: employeeLis
     const expiry = String(form.get('expiry_date') || '');
     if (productId || planId || expiry) {
       payload.subscription = {
-        product_id: productId || null, plan_id: planId || null, purchase_date: String(form.get('purchase_date')),
-        start_date: String(form.get('purchase_date')), expiry_date: expiry || null, is_lifetime: !expiry,
+        product_id: productId || null,
+        plan_id: planId || null,
+        purchase_date: String(form.get('purchase_date')),
+        start_date: String(form.get('purchase_date')),
+        expiry_date: expiry || null,
+        is_lifetime: !expiry,
         status: 'ACTIVE',
       };
     }
+
+    isSaving = true;
+    const saveBtn = node.querySelector('[data-action="customer-save"]');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.setAttribute('aria-busy', 'true');
+    }
+
     try {
       const result = await api.post('/api/tracker/customers', payload);
       closeModal();
       toast(result.warnings?.length ? `Customer added. ${result.warnings[0]}` : 'Customer added.');
       ctx.rerender();
     } catch (error) {
-      toast(error.message, 'danger');
+      toast(error.message || 'Failed to save customer.', 'danger');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.removeAttribute('aria-busy');
+      }
+    } finally {
+      isSaving = false;
     }
   });
 }
@@ -816,7 +869,19 @@ async function renderCustomer(container, params, ctx) {
     return;
   }
   const { customer, subscriptions, custom, days_to_expiry: days } = detail;
-  const { columns, plans, employees } = await api.get('/api/tracker/reference');
+  let products = [];
+  let reference = { columns: [], plans: [], employees: [] };
+  try {
+    const [refData, productsData] = await Promise.all([
+      api.get('/api/tracker/reference'),
+      api.get('/api/products?limit=100&status=ACTIVE').catch(() => ({ products: [] })),
+    ]);
+    reference = refData;
+    products = (productsData?.products || []).map(p => ({ value: p.id, label: p.name }));
+  } catch {
+    reference = await api.get('/api/tracker/reference');
+  }
+  const { columns, plans, employees } = reference;
   const customColumns = columns.filter(column => column.custom);
   const errors = warnings(customer.warnings || []);
 
@@ -911,7 +976,7 @@ async function renderCustomer(container, params, ctx) {
       title: `Add purchase or renewal · ${customer.name}`,
       body: `<form id="subscription-form" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         ${field({ label: 'Product', name: 'product_id', type: 'select',
-    options: [{ value: '', label: 'Not selected' }, ...(window.__trackerProducts || [])] })}
+    options: [{ value: '', label: 'Not selected' }, ...products.map(p => ({ value: p.value || p.id, label: p.label || p.name }))] })}
         ${field({ label: 'Plan', name: 'plan_id', type: 'select',
     options: [{ value: '', label: 'Not selected' }, ...plans.map(plan => ({ value: plan.id, label: plan.label }))] })}
         ${field({ label: 'Date of purchase', name: 'purchase_date', type: 'date',
@@ -926,7 +991,15 @@ async function renderCustomer(container, params, ctx) {
         label: 'Add subscription', action: 'subscription-save', variant: 'primary',
       })}`,
     });
+    let isSaving = false;
     ctx.on('subscription-save', async () => {
+      if (isSaving) return;
+      isSaving = true;
+      const saveBtn = node.querySelector('[data-action="subscription-save"]');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.setAttribute('aria-busy', 'true');
+      }
       const form = new FormData(node.querySelector('#subscription-form'));
       const expiry = String(form.get('expiry_date') || '');
       const amount = String(form.get('amount') || '');
@@ -942,7 +1015,15 @@ async function renderCustomer(container, params, ctx) {
         closeModal();
         toast('Subscription added.');
         ctx.rerender();
-      } catch (error) { toast(error.message, 'danger'); }
+      } catch (error) {
+        toast(error.message || 'Failed to save subscription.', 'danger');
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.removeAttribute('aria-busy');
+        }
+      } finally {
+        isSaving = false;
+      }
     });
   });
   void employees;

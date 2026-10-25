@@ -97,6 +97,40 @@ test('a customer is created, edited with concurrency protection, archived and re
   assert.equal(missing.status, 404);
 });
 
+test('customer creation validates required name and associates product and employee', async () => {
+  const owner = await withOwner(12);
+
+  // Empty name is rejected with 400
+  const invalid = await owner.client.json('POST', '/api/tracker/customers', {
+    name: '   ',
+    business_name: 'Invalid Test Cafe',
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.data.code, 'VALIDATION_ERROR');
+
+  // Valid customer with product and employee succeeds
+  const created = owner.client.ok(await owner.client.json('POST', '/api/tracker/customers', {
+    name: 'Valid New Customer',
+    business_name: 'Valid Business',
+    address: '456 Market St',
+    employee_id: owner.employee.id,
+    subscription: {
+      product_id: owner.product.id,
+      plan_id: owner.plan.id,
+      purchase_date: '2026-02-01',
+      start_date: '2026-02-01',
+      expiry_date: '2027-02-01',
+      is_lifetime: false,
+      status: 'ACTIVE',
+    },
+  }));
+  assert.equal(created.customer.name, 'Valid New Customer');
+  assert.equal(created.customer.employee_id, owner.employee.id);
+  assert.equal(created.subscriptions.length, 1);
+  assert.equal(created.subscriptions[0].product_id, owner.product.id);
+  assert.equal(created.subscriptions[0].plan_id, owner.plan.id);
+});
+
 test('duplicate customers are warned about, not blocked', async () => {
   const owner = await withOwner(3);
   const first = owner.client.ok(await owner.client.json('POST', '/api/tracker/customers', customer(owner)));
