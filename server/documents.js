@@ -553,10 +553,146 @@ export async function issueInvoice(db, actor, id) {
         due_date=$4, snapshot=$5, updated_at=now() WHERE id=$1`,
     [id, allocated.number, allocated.financial_year, dueDate, JSON.stringify(snapshot)]);
     await statusChange(tx, { documentType: 'INVOICE', documentId: id, from: 'DRAFT', to: 'ISSUED', actorId: actor.id, note: allocated.number });
+    await syncPosInvoice(tx, actor, invoice, client, items, allocated.number);
     await audit(tx, 'INVOICE_ISSUED', { actorId: actor.id, entityType: 'INVOICE', entityId: id,
       metadata: { number: allocated.number, grand_total_minor: invoice.totals.grand_total_minor } });
     return { ...(await getInvoice(tx, id)), prefix_mismatch: allocated.prefix_mismatch };
   });
+}
+
+/** Synchronizes Nextora POS desktop/mobile invoice purchases into the POS customer tracker. */
+async function syncPosInvoice(tx, actor, invoice, client, items, allocatedNumber) {
+  try {
+    const posItems = [];
+    for (const item of items) {
+      let product = null;
+      if (item.product_id) {
+        product = (await tx.query('SELECT * FROM inv.products WHERE id=$1', [item.product_id])).rows[0];
+      }
+      const isPos = (product && (product.category?.toLowerCase().includes('pos') || product.name?.toLowerCase().includes('pos')))
+        || item.description?.toLowerCase().includes('nextora pos')
+        || item.description?.toLowerCase().includes('pos');
+      if (isPos) {
+        posItems.push({ item, product });
+      }
+    }
+
+    if (posItems.length === 0) return;
+
+    // 1. Customer identity matching:
+    // Match by client_id first
+    let customer = (await tx.query('SELECT * FROM inv.pos_customers WHERE client_id=$1', [client.id])).rows[0];
+    if (!customer) {
+      // Match unlinked customer by name, or (if unique) phone or email
+      const candidates = (await tx.query(
+        `SELECT * FROM inv.pos_customers
+         WHERE client_id IS NULL AND (
+           lower(name) = lower($1)
+           OR (length($2) > 0 AND phone = $2)
+           OR (length($3) > 0 AND lower(email) = lower($3))
+         )
+         ORDER BY created_at ASC LIMIT 1`,
+        [client.name, client.phone || '', client.email || '']
+      )).rows;
+      if (candidates.length > 0) {
+        customer = candidates[0];
+        await tx.query('UPDATE inv.pos_customers SET client_id=$1, updated_at=now() WHERE id=$2', [client.id, customer.id]);
+        customer.client_id = client.id;
+      }
+    }
+
+    if (!customer) {
+      const customerId = randomUUID();
+      await tx.query(
+        `INSERT INTO inv.pos_customers(id, name, business_name, address, email, phone, remarks, client_id, status, created_by)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, 'ACTIVE', $9)`,
+        [
+          customerId,
+          client.name,
+          client.company_name || '',
+          client.billing_address || '',
+          client.email || '',
+          client.phone || '',
+          `Created automatically from POS Invoice ${allocatedNumber}`,
+          client.id,
+          actor.id,
+        ]
+      );
+      customer = (await tx.query('SELECT * FROM inv.pos_customers WHERE id=$1', [customerId])).rows[0];
+      await audit(tx, 'CUSTOMER_CREATED', {
+        actorId: actor.id,
+        entityType: 'POS_CUSTOMER',
+        entityId: customer.id,
+        metadata: { name: customer.name, source: 'INVOICE_SYNC', invoice_id: invoice.id },
+      });
+    }
+
+    // 2. Load active plans to determine subscription duration
+    const plans = (await tx.query("SELECT * FROM inv.pos_subscription_plans WHERE status='ACTIVE' ORDER BY duration_months")).rows;
+
+    for (const { item, product } of posItems) {
+      // Prevent duplicate subscription creation for the same invoice item
+      const existingSub = (await tx.query(
+        'SELECT id FROM inv.pos_subscriptions WHERE invoice_id=$1 AND customer_id=$2 AND (product_id=$3 OR ($3 IS NULL AND product_id IS NULL))',
+        [invoice.id, customer.id, item.product_id || null]
+      )).rows[0];
+      if (existingSub) continue;
+
+      const isLifetime = /lifetime/i.test(item.description) || /lifetime/i.test(product?.name || '');
+      let plan = null;
+      if (isLifetime) {
+        plan = plans.find(p => p.is_lifetime || p.duration_months === 0);
+      } else if (product?.license_duration_months) {
+        plan = plans.find(p => p.duration_months === product.license_duration_months);
+      }
+      if (!plan) {
+        plan = plans.find(p => p.duration_months === 12 || p.label.toLowerCase().includes('year')) || plans[0];
+      }
+
+      const durationMonths = plan?.duration_months ?? 12;
+      const isLife = isLifetime || Boolean(plan?.is_lifetime) || durationMonths === 0;
+
+      let expiryDate = null;
+      if (!isLife) {
+        const d = new Date(`${invoice.issue_date}T00:00:00Z`);
+        d.setUTCMonth(d.getUTCMonth() + durationMonths);
+        expiryDate = d.toISOString().slice(0, 10);
+      }
+
+      const subId = randomUUID();
+      await tx.query(
+        `INSERT INTO inv.pos_subscriptions(id, customer_id, product_id, plan_id, plan_label, purchase_date, start_date,
+          expiry_date, is_lifetime, status, amount_minor, transaction_reference, invoice_id, notes, created_by)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE', $10, $11, $12, $13, $14)`,
+        [
+          subId,
+          customer.id,
+          item.product_id || product?.id || null,
+          plan?.id || null,
+          plan?.label || (isLife ? 'Lifetime' : `${durationMonths} Months`),
+          invoice.issue_date,
+          invoice.issue_date,
+          expiryDate,
+          isLife,
+          item.total_minor || item.gross_minor || null,
+          allocatedNumber,
+          invoice.id,
+          `Auto-synced from invoice ${allocatedNumber}`,
+          actor.id,
+        ]
+      );
+
+      await audit(tx, 'SUBSCRIPTION_ADDED', {
+        actorId: actor.id,
+        entityType: 'POS_SUBSCRIPTION',
+        entityId: subId,
+        metadata: { customer_id: customer.id, source: 'INVOICE_SYNC', invoice_id: invoice.id },
+      });
+    }
+  } catch (err) {
+    console.error('ERROR IN syncPosInvoice:', err);
+    throw err;
+  }
 }
 
 const addDays = (date, days) => {

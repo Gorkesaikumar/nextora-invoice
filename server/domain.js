@@ -315,13 +315,22 @@ export const planSchema = z.object({
  * subscription. Reused by the subscription endpoints so a purchase, a renewal
  * and an inline edit can never disagree about what is valid.
  */
-export const subscriptionSchema = z.object({
+const baseSubscriptionShape = {
   product_id: uuid.nullable().default(null), plan_id: uuid.nullable().default(null),
   plan_label: optional(80), purchase_date: day, start_date: day.nullable().default(null),
   expiry_date: day.nullable().default(null), is_lifetime: z.boolean().default(false),
   status: z.enum(SUBSCRIPTION_STATUSES).default('ACTIVE'), amount_minor: minorUnits.nullable().default(null),
-  transaction_reference: optional(120), notes: multiline(600).default(''), renews: z.boolean().default(false),
+  transaction_reference: optional(120), notes: multiline(600).default(''),
+};
+
+export const subscriptionSchema = z.object({
+  ...baseSubscriptionShape,
+  renews: z.boolean().default(false),
 }).strict().refine(s => s.is_lifetime || s.expiry_date, 'Provide an expiry date, or mark the plan as lifetime')
+  .refine(s => !s.is_lifetime || !s.expiry_date, 'A lifetime plan cannot have an expiry date');
+
+export const subscriptionUpdateSchema = z.object(baseSubscriptionShape).strict()
+  .refine(s => s.is_lifetime || s.expiry_date, 'Provide an expiry date, or mark the plan as lifetime')
   .refine(s => !s.is_lifetime || !s.expiry_date, 'A lifetime plan cannot have an expiry date');
 
 export const posCustomerSchema = z.object({
@@ -330,6 +339,7 @@ export const posCustomerSchema = z.object({
   phone: phone.default(''), remarks: multiline(2000).default(''), client_id: uuid.nullable().default(null),
   status: z.enum(['ACTIVE', 'ARCHIVED']).default('ACTIVE'),
   subscription: subscriptionSchema.nullable().default(null),
+  custom_values: z.array(z.object({ definition_id: uuid, value: z.string().max(4000) }).strict()).optional(),
 }).strict();
 
 export const customFieldSchema = z.object({
@@ -512,6 +522,7 @@ export const agreementDraftObject = z.object({
 }).strict();
 
 export const agreementUpdateSchema = z.object({
+  influencer_id: uuid.optional(),
   title: clean(200).optional(),
   brand_name: clean(100).optional(),
   product_name: clean(100).optional(),
@@ -537,7 +548,7 @@ export const agreementUpdateSchema = z.object({
   signatory_name: clean(120).optional(),
   signatory_title: clean(120).optional(),
   influencer_signatory_name: clean(120).optional(),
-}).strict();
+});
 
 export const agreementDraftSchema = agreementDraftObject
 .refine(a => a.is_indefinite || (a.end_date !== null && a.end_date >= a.start_date),

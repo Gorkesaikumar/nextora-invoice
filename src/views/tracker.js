@@ -91,6 +91,11 @@ async function renderGrid(container, params, ctx) {
     const value = cellText(row, column);
     const editable = canWrite && column.editable && column.type !== 'SERIAL';
     const classes = `align-top border-b border-outline px-3 py-2 ${dirty !== undefined ? 'bg-[#FFFBEA]' : ''}`;
+    if (column.key === 'name') {
+      return `<td class="${classes}" style="max-width:${column.width}px">
+        <a href="#/tracker/${esc(row.id)}" class="font-medium text-primary hover:underline" title="View details">${esc(dirty !== undefined ? dirty : value)}</a>
+      </td>`;
+    }
     if (!editable) {
       return `<td class="${classes} ${column.key === 'serial' ? 'num text-on-surface-variant' : ''}"
         style="max-width:${column.width}px">${column.key === 'serial' ? `<span class="num">${row.serial}</span>` : esc(value)}</td>`;
@@ -104,11 +109,12 @@ async function renderGrid(container, params, ctx) {
 
   const rowActions = row => (canWrite ? `<td class="border-b border-outline px-3 py-2 text-right whitespace-nowrap">
       ${state.dirty.has(row.id)
-    ? `${button({ label: 'Save', action: 'row-save', attributes: `data-id="${esc(row.id)}"`, variant: 'primary' })}
-         ${button({ label: 'Cancel', action: 'row-cancel', attributes: `data-id="${esc(row.id)}"` })}`
-    : `${button({ label: 'Edit', action: 'customer-detail', attributes: `data-id="${esc(row.id)}"` })}
+    ? `${button({ label: 'Save', action: 'row-save', attributes: `data-id="${esc(row.id)}"`, variant: 'primary', size: 'sm' })}
+         ${button({ label: 'Cancel', action: 'row-cancel', attributes: `data-id="${esc(row.id)}"`, size: 'sm' })}`
+    : `${button({ label: 'Edit', action: 'customer-edit', attributes: `data-id="${esc(row.id)}"`, size: 'sm' })}
          ${button({ label: row.status === 'ARCHIVED' ? 'Restore' : 'Archive',
-    action: row.status === 'ARCHIVED' ? 'customer-restore' : 'customer-archive', attributes: `data-id="${esc(row.id)}"` })}`}
+    action: row.status === 'ARCHIVED' ? 'customer-restore' : 'customer-archive', attributes: `data-id="${esc(row.id)}"`, size: 'sm' })}
+         ${button({ label: 'Delete', action: 'customer-delete', attributes: `data-id="${esc(row.id)}"`, variant: 'danger', size: 'sm' })}`}
     </td>` : '');
 
   container.innerHTML = `
@@ -298,6 +304,17 @@ function bindGrid(container, ctx, contextData) {
     if (trigger.checked) state.selected.add(trigger.dataset.id); else state.selected.delete(trigger.dataset.id);
   });
   ctx.on('customer-detail', trigger => ctx.navigate(`#/tracker/${trigger.dataset.id}`));
+  ctx.on('customer-edit', trigger => {
+    openCustomerEditModal(ctx, { customerId: trigger.dataset.id, reference: contextData, products });
+  });
+  ctx.on('customer-delete', trigger => {
+    const row = contextData.data.customers.find(item => item.id === trigger.dataset.id);
+    confirmDeleteCustomerModal(ctx, {
+      customerId: trigger.dataset.id,
+      customerName: row?.name || 'Customer',
+      businessName: row?.business_name || '',
+    });
+  });
   for (const [action, status, label] of [['customer-archive', 'ARCHIVED', 'Archive'],
     ['customer-restore', 'ACTIVE', 'Restore']]) {
     ctx.on(action, trigger => {
@@ -855,6 +872,428 @@ async function openShareModal(ctx, { shareType, columns, data }) {
 // openCustomerModal is already exported where it is declared.
 export { openColumnModal };
 
+/* ------------------------------------------------------------ customer edit */
+
+export async function openCustomerEditModal(ctx, { customerId, reference, products }) {
+  let detail;
+  try {
+    detail = await api.get(`/api/tracker/customers/${customerId}`);
+  } catch (error) {
+    toast(error.message, 'danger');
+    return;
+  }
+  const customer = detail.customer;
+  const customValues = detail.custom || [];
+
+  let ref = reference;
+  if (!ref || !ref.employees || !ref.plans || !ref.columns) {
+    try {
+      ref = await api.get('/api/tracker/reference');
+    } catch {
+      ref = { employees: [], plans: [], columns: [], custom_fields: [] };
+    }
+  }
+
+  const employees = (ref.employees || []).filter(e => e.status === 'ACTIVE' || e.id === customer.employee_id);
+  const customDefs = (ref.custom_fields || ref.customFields || []).filter(f => !f.status || f.status === 'ACTIVE');
+
+  const customFieldsHtml = customDefs.length > 0 ? `
+    <div class="sm:col-span-2 border-t border-outline pt-3 mt-1">
+      <p class="label-technical mb-2 font-semibold text-on-surface">Custom Fields</p>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        ${customDefs.map(def => {
+          const stored = customValues.find(v => v.definition_id === def.id)?.value ?? def.default_value ?? '';
+          let fieldType = 'text';
+          if (def.field_type === 'DATE') fieldType = 'date';
+          else if (['NUMBER', 'CURRENCY'].includes(def.field_type)) fieldType = 'number';
+          else if (def.field_type === 'LONG_TEXT') fieldType = 'textarea';
+          else if (def.field_type === 'EMAIL') fieldType = 'email';
+          
+          const opts = def.field_type === 'DROPDOWN' && Array.isArray(def.options)
+            ? [{ value: '', label: 'Select option' }, ...def.options.map(o => ({ value: o, label: o }))]
+            : undefined;
+
+          return field({
+            label: def.label,
+            name: `custom-${def.id}`,
+            type: fieldType,
+            value: stored,
+            options: opts,
+            hint: def.description || '',
+            required: def.required,
+          });
+        }).join('')}
+      </div>
+    </div>
+  ` : '';
+
+  const formHtml = `
+    <form id="customer-edit-form" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      ${field({ label: 'Customer Name', name: 'name', required: true, value: customer.name || '' })}
+      ${field({ label: 'Customer Business Name', name: 'business_name', value: customer.business_name || '', hint: 'Restaurant, shop or company name.' })}
+      ${field({ label: 'Address', name: 'address', type: 'textarea', className: 'sm:col-span-2', value: customer.address || '' })}
+      ${field({
+        label: 'Employee Assigned', name: 'employee_id', type: 'select', value: customer.employee_id || '',
+        options: [{ value: '', label: 'Not assigned' }, ...employees.map(e => ({ value: e.id, label: e.name }))]
+      })}
+      ${field({
+        label: 'Customer Status', name: 'status', type: 'select', value: customer.status || 'ACTIVE',
+        options: [{ value: 'ACTIVE', label: 'Active' }, { value: 'ARCHIVED', label: 'Archived' }]
+      })}
+      ${field({ label: 'Phone', name: 'phone', type: 'text', value: customer.phone || '' })}
+      ${field({ label: 'Email', name: 'email', type: 'email', value: customer.email || '' })}
+      ${field({ label: 'Remarks', name: 'remarks', type: 'textarea', className: 'sm:col-span-2', value: customer.remarks || '' })}
+      ${customFieldsHtml}
+    </form>
+  `;
+
+  const node = modal({
+    title: `Edit Customer · ${esc(customer.name)}`,
+    size: 'wide',
+    body: formHtml,
+    footer: `${button({ label: 'Cancel', action: 'edit-cancel' })}${button({ label: 'Save changes', action: 'edit-save', variant: 'primary' })}`,
+  });
+
+  const formEl = node.querySelector('#customer-edit-form');
+  const initialData = new FormData(formEl);
+
+  const isFormDirty = () => {
+    const current = new FormData(formEl);
+    for (const [key, value] of initialData.entries()) {
+      if (current.get(key) !== value) return true;
+    }
+    return false;
+  };
+
+  node.querySelector('[data-action="edit-cancel"]')?.addEventListener('click', () => {
+    if (isFormDirty() && !window.confirm('You have unsaved changes. Discard them?')) return;
+    closeModal();
+  });
+
+  let isSaving = false;
+  node.querySelector('[data-action="edit-save"]')?.addEventListener('click', async () => {
+    if (isSaving) return;
+    if (typeof formEl.reportValidity === 'function' && !formEl.reportValidity()) return;
+
+    const form = new FormData(formEl);
+    const name = String(form.get('name') || '').trim();
+    if (!name) {
+      toast('Customer Name is required.', 'danger');
+      formEl.querySelector('[name="name"]')?.focus();
+      return;
+    }
+
+    const payload = {
+      name,
+      business_name: String(form.get('business_name') || '').trim(),
+      address: String(form.get('address') || '').trim(),
+      employee_id: String(form.get('employee_id') || '') || null,
+      status: String(form.get('status') || 'ACTIVE'),
+      phone: String(form.get('phone') || '').trim(),
+      email: String(form.get('email') || '').trim(),
+      remarks: String(form.get('remarks') || '').trim(),
+      expected_updated_at: customer.updated_at,
+    };
+
+    const customValuesPayload = customDefs.map(def => ({
+      definition_id: def.id,
+      value: String(form.get(`custom-${def.id}`) ?? '').trim(),
+    }));
+
+    isSaving = true;
+    const saveBtn = node.querySelector('[data-action="edit-save"]');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.setAttribute('aria-busy', 'true');
+      saveBtn.innerText = 'Saving…';
+    }
+
+    try {
+      await api.patch(`/api/tracker/customers/${customerId}`, payload);
+      if (customValuesPayload.length > 0) {
+        await api.put(`/api/tracker/customers/${customerId}/fields`, { values: customValuesPayload });
+      }
+      closeModal();
+      toast('Customer saved successfully.');
+      ctx.rerender();
+    } catch (error) {
+      toast(error.message || 'Failed to save customer.', 'danger');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.innerText = 'Save changes';
+      }
+    } finally {
+      isSaving = false;
+    }
+  });
+}
+
+/* ------------------------------------------------------------ purchase edit */
+
+export function openSubscriptionEditModal(ctx, { subscriptionId, customer, subscriptions, products = [], plans = [] }) {
+  const sub = subscriptions.find(s => s.id === subscriptionId);
+  if (!sub) {
+    toast('Subscription record not found.', 'danger');
+    return;
+  }
+
+  const isLinkedToInvoice = Boolean(sub.invoice_id);
+  const productList = Array.isArray(products) ? products : [];
+  const planList = Array.isArray(plans) ? plans : [];
+
+  const bodyHtml = `
+    <div class="space-y-4">
+      ${isLinkedToInvoice ? alertBox(`This purchase was created from Invoice #${sub.transaction_reference || ''}. Financial transaction records are protected from direct modification.`, 'info') : ''}
+      <form id="subscription-edit-form" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        ${field({
+          label: 'Product', name: 'product_id', type: 'select', value: sub.product_id || '',
+          options: [{ value: '', label: 'Not selected' }, ...productList.map(p => ({ value: p.value || p.id, label: p.label || p.name }))]
+        })}
+        ${field({
+          label: 'Plan', name: 'plan_id', type: 'select', value: sub.plan_id || '',
+          options: [{ value: '', label: 'Not selected' }, ...planList.map(p => ({ value: p.id, label: `${p.label}${p.is_lifetime ? ' (lifetime)' : ` · ${p.duration_months} months`}` }))]
+        })}
+        ${field({ label: 'Date of Purchase', name: 'purchase_date', type: 'date', required: true, value: sub.purchase_date || '' })}
+        ${field({
+          label: 'Date of Expiry', name: 'expiry_date', type: 'date', value: sub.is_lifetime ? '' : (sub.expiry_date || ''),
+          hint: 'Leave blank for a lifetime plan.'
+        })}
+        ${field({
+          label: 'Status', name: 'status', type: 'select', value: sub.status || 'ACTIVE',
+          options: [
+            { value: 'ACTIVE', label: 'Active (Running)' },
+            { value: 'EXPIRED', label: 'Expired' },
+            { value: 'CANCELLED', label: 'Cancelled' },
+            { value: 'TRIAL', label: 'Trial' },
+          ]
+        })}
+        ${field({
+          label: 'Amount Recorded (₹)', name: 'amount', type: 'number', step: '0.01',
+          value: sub.amount_minor !== null && sub.amount_minor !== undefined ? (Number(sub.amount_minor) / 100).toFixed(2) : '',
+          attributes: isLinkedToInvoice ? 'readonly disabled' : '',
+          hint: isLinkedToInvoice ? 'Protected (linked to invoice)' : 'Optional. Paise are stored exactly.'
+        })}
+        ${field({
+          label: 'Transaction / Invoice Reference', name: 'transaction_reference',
+          value: sub.transaction_reference || '',
+          attributes: isLinkedToInvoice ? 'readonly disabled' : '',
+          hint: isLinkedToInvoice ? 'Protected (linked to invoice)' : 'Invoice or receipt reference'
+        })}
+        ${field({
+          label: 'Notes / Remarks', name: 'notes', type: 'textarea', className: 'sm:col-span-2',
+          value: sub.notes || ''
+        })}
+      </form>
+    </div>
+  `;
+
+  const node = modal({
+    title: `Edit Purchase · ${esc(sub.product_name || sub.plan_label || 'Purchase')}`,
+    size: 'wide',
+    body: bodyHtml,
+    footer: `${button({ label: 'Cancel', action: 'sub-edit-cancel' })}${button({ label: 'Save changes', action: 'sub-edit-save', variant: 'primary' })}`,
+  });
+
+  const formEl = node.querySelector('#subscription-edit-form');
+  const initialData = new FormData(formEl);
+
+  const isFormDirty = () => {
+    const current = new FormData(formEl);
+    for (const [key, value] of initialData.entries()) {
+      if (current.get(key) !== value) return true;
+    }
+    return false;
+  };
+
+  node.querySelector('[data-action="sub-edit-cancel"]')?.addEventListener('click', () => {
+    if (isFormDirty() && !window.confirm('Discard unsaved purchase changes?')) return;
+    closeModal();
+  });
+
+  let isSaving = false;
+  node.querySelector('[data-action="sub-edit-save"]')?.addEventListener('click', async () => {
+    if (isSaving) return;
+    if (typeof formEl.reportValidity === 'function' && !formEl.reportValidity()) return;
+
+    const form = new FormData(formEl);
+    const productId = String(form.get('product_id') || '') || null;
+    const planId = String(form.get('plan_id') || '') || null;
+    const purchaseDate = String(form.get('purchase_date') || '');
+    const expiry = String(form.get('expiry_date') || '');
+    const chosenPlan = planList.find(p => p.id === planId);
+    const isLifetime = !expiry && (chosenPlan?.is_lifetime || chosenPlan?.duration_months === 0);
+
+    if (!purchaseDate) {
+      toast('Date of Purchase is required.', 'danger');
+      return;
+    }
+
+    let amountMinor = sub.amount_minor;
+    let txRef = sub.transaction_reference;
+    if (!isLinkedToInvoice) {
+      const amtStr = String(form.get('amount') || '').trim();
+      amountMinor = amtStr ? Math.round(Number(amtStr) * 100) : null;
+      txRef = String(form.get('transaction_reference') || '').trim();
+    }
+
+    const payload = {
+      product_id: productId,
+      plan_id: planId,
+      plan_label: chosenPlan?.label || sub.plan_label || '',
+      purchase_date: purchaseDate,
+      start_date: purchaseDate,
+      expiry_date: isLifetime ? null : (expiry || null),
+      is_lifetime: Boolean(isLifetime),
+      status: String(form.get('status') || 'ACTIVE'),
+      amount_minor: amountMinor,
+      transaction_reference: txRef,
+      notes: String(form.get('notes') || '').trim(),
+    };
+
+    isSaving = true;
+    const saveBtn = node.querySelector('[data-action="sub-edit-save"]');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.setAttribute('aria-busy', 'true');
+      saveBtn.innerText = 'Saving…';
+    }
+
+    try {
+      await api.patch(`/api/tracker/subscriptions/${subscriptionId}`, payload);
+      closeModal();
+      toast('Purchase updated.');
+      ctx.rerender();
+    } catch (error) {
+      toast(error.message || 'Failed to update purchase.', 'danger');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.innerText = 'Save changes';
+      }
+    } finally {
+      isSaving = false;
+    }
+  });
+}
+
+/* ------------------------------------------------------------ delete modals */
+
+export function confirmDeleteCustomerModal(ctx, { customerId, customerName, businessName }) {
+  const node = modal({
+    title: 'Delete Customer',
+    body: `
+      <div class="space-y-3">
+        <p class="text-sm">Are you sure you want to permanently delete customer <strong>${esc(customerName)}</strong>${businessName ? ` (${esc(businessName)})` : ''}?</p>
+        <div class="border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+          <strong>Warning:</strong> This permanently erases the customer profile, custom fields, and unlinked purchase history. This action cannot be undone.
+        </div>
+        <p class="text-xs text-on-surface-variant">Customers with issued invoices or recorded payments cannot be permanently deleted to protect financial records, and must be archived instead.</p>
+        <div id="delete-error-area" class="mt-2"></div>
+      </div>
+    `,
+    footer: `${button({ label: 'Cancel', action: 'delete-cancel' })}${button({ label: 'Delete Customer', action: 'delete-confirm', variant: 'danger' })}`,
+  });
+
+  node.querySelector('[data-action="delete-cancel"]')?.addEventListener('click', () => closeModal());
+
+  let isDeleting = false;
+  node.querySelector('[data-action="delete-confirm"]')?.addEventListener('click', async () => {
+    if (isDeleting) return;
+    isDeleting = true;
+    const delBtn = node.querySelector('[data-action="delete-confirm"]');
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.setAttribute('aria-busy', 'true');
+      delBtn.innerText = 'Deleting…';
+    }
+
+    try {
+      await api.delete(`/api/tracker/customers/${customerId}`);
+      closeModal();
+      toast('Customer permanently deleted.');
+      if (location.hash.startsWith('#/tracker/')) {
+        ctx.navigate('#/tracker');
+      } else {
+        ctx.rerender();
+      }
+    } catch (error) {
+      const errArea = node.querySelector('#delete-error-area');
+      if (errArea) {
+        errArea.innerHTML = `
+          <div class="border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-2">
+            <p><strong>Cannot Delete:</strong> ${esc(error.message)}</p>
+            <button type="button" class="btn btn-primary text-xs py-1 px-3" data-action="archive-instead">Archive Customer Instead</button>
+          </div>
+        `;
+        errArea.querySelector('[data-action="archive-instead"]')?.addEventListener('click', async () => {
+          try {
+            await api.post(`/api/tracker/customers/${customerId}/status`, { status: 'ARCHIVED' });
+            closeModal();
+            toast('Customer archived.');
+            ctx.rerender();
+          } catch (archiveErr) {
+            toast(archiveErr.message, 'danger');
+          }
+        });
+      }
+      toast(error.message || 'Failed to delete customer.', 'danger');
+      if (delBtn) {
+        delBtn.disabled = false;
+        delBtn.removeAttribute('aria-busy');
+        delBtn.innerText = 'Delete Customer';
+      }
+    } finally {
+      isDeleting = false;
+    }
+  });
+}
+
+export function confirmDeletePurchaseModal(ctx, { subscriptionId, productName, planName, purchaseDate }) {
+  const node = modal({
+    title: 'Delete Purchase Record',
+    body: `
+      <div class="space-y-3">
+        <p class="text-sm">Are you sure you want to permanently delete the purchase record for <strong>${esc(productName || 'Unknown product')}</strong> (${esc(planName || 'Plan')}) purchased on <strong>${esc(purchaseDate)}</strong>?</p>
+        <div class="border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+          <strong>Warning:</strong> Deleting this purchase will permanently remove this subscription record. Other purchases for this customer will remain untouched. Purchases linked to issued invoices cannot be deleted.
+        </div>
+      </div>
+    `,
+    footer: `${button({ label: 'Cancel', action: 'delete-sub-cancel' })}${button({ label: 'Delete Purchase', action: 'delete-sub-confirm', variant: 'danger' })}`,
+  });
+
+  node.querySelector('[data-action="delete-sub-cancel"]')?.addEventListener('click', () => closeModal());
+
+  let isDeleting = false;
+  node.querySelector('[data-action="delete-sub-confirm"]')?.addEventListener('click', async () => {
+    if (isDeleting) return;
+    isDeleting = true;
+    const delBtn = node.querySelector('[data-action="delete-sub-confirm"]');
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.setAttribute('aria-busy', 'true');
+      delBtn.innerText = 'Deleting…';
+    }
+
+    try {
+      await api.delete(`/api/tracker/subscriptions/${subscriptionId}`);
+      closeModal();
+      toast('Purchase record deleted.');
+      ctx.rerender();
+    } catch (error) {
+      toast(error.message || 'Failed to delete purchase record.', 'danger');
+      if (delBtn) {
+        delBtn.disabled = false;
+        delBtn.removeAttribute('aria-busy');
+        delBtn.innerText = 'Delete Purchase';
+      }
+    } finally {
+      isDeleting = false;
+    }
+  });
+}
+
 /* ------------------------------------------------------------ customer detail */
 
 async function renderCustomer(container, params, ctx) {
@@ -891,9 +1330,11 @@ async function renderCustomer(container, params, ctx) {
     breadcrumb: `<a class="hover:text-on-surface" href="#/tracker">POS Customers</a> / ${esc(customer.name)}`,
     subtitle: 'One customer, every purchase. A renewal adds a subscription instead of replacing the old one.',
     actions: `${button({ label: 'Back to tracker', action: 'tracker-back' })}
+      ${button({ label: 'Edit Customer', action: 'customer-edit', attributes: `data-id="${esc(customer.id)}"`, variant: 'primary' })}
       ${customer.status === 'ARCHIVED'
-    ? button({ label: 'Restore', action: 'customer-status', attributes: 'data-status="ACTIVE"', variant: 'primary' })
-    : button({ label: 'Archive', action: 'customer-status', attributes: 'data-status="ARCHIVED"' })}`,
+    ? button({ label: 'Restore', action: 'customer-status', attributes: 'data-status="ACTIVE"' })
+    : button({ label: 'Archive', action: 'customer-status', attributes: 'data-status="ARCHIVED"' })}
+      ${button({ label: 'Delete Customer', action: 'customer-delete', attributes: `data-id="${esc(customer.id)}"`, variant: 'danger' })}`,
   })}
     ${errors}
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -902,8 +1343,10 @@ async function renderCustomer(container, params, ctx) {
     title: 'Subscriptions',
     subtitle: 'Purchase history, newest first.',
     actions: button({ label: 'Add purchase or renewal', action: 'subscription-add', variant: 'primary' }),
-    body: subscriptions.length ? `<div class="overflow-x-auto"><table class="data-table w-full min-w-[680px]">
-      <thead><tr><th>Product</th><th>Plan</th><th>Purchased</th><th>Expires</th><th>Status</th><th>Reference</th></tr></thead>
+    body: subscriptions.length ? `<div class="overflow-x-auto"><table class="data-table w-full min-w-[720px]">
+      <thead><tr>
+        <th>Product</th><th>Plan</th><th>Purchased</th><th>Expires</th><th>Status</th><th>Reference</th><th class="text-right">Actions</th>
+      </tr></thead>
       <tbody>${subscriptions.map(item => `<tr>
         <td>${esc(item.product_name || 'Not set')}</td>
         <td>${esc(item.plan_name || item.plan_label || 'Not set')}</td>
@@ -912,6 +1355,10 @@ async function renderCustomer(container, params, ctx) {
         <td>${badge(item.status === 'ACTIVE' ? 'Running' : titleCase(item.status),
       item.status === 'ACTIVE' ? 'success' : 'neutral')}</td>
         <td class="text-xs">${esc(item.transaction_reference || '—')}</td>
+        <td class="text-right whitespace-nowrap">
+          ${button({ label: 'Edit', action: 'subscription-edit', attributes: `data-id="${esc(item.id)}"`, size: 'sm' })}
+          ${button({ label: 'Delete', action: 'subscription-delete', attributes: `data-id="${esc(item.id)}"`, variant: 'danger', size: 'sm' })}
+        </td>
       </tr>`).join('')}</tbody></table></div>`
       : '<p class="px-5 py-4 text-sm text-on-surface-variant">No subscription recorded yet.</p>',
   })}
@@ -934,12 +1381,14 @@ async function renderCustomer(container, params, ctx) {
       <div class="space-y-4">
         ${card({
     title: 'Customer',
+    actions: button({ label: 'Edit', action: 'customer-edit', attributes: `data-id="${esc(customer.id)}"`, size: 'sm' }),
     body: `<dl class="px-5 py-3 text-sm">
-          ${[['Business name', customer.business_name || '—'], ['Employee', customer.employee_name || 'Not assigned'],
-    ['Address', customer.address || '—'], ['Remarks', customer.remarks || '—'],
+          ${[['Customer name', customer.name], ['Business name', customer.business_name || '—'], ['Employee', customer.employee_name || 'Not assigned'],
+    ['Address', customer.address || '—'], ['Phone', customer.phone || '—'], ['Email', customer.email || '—'],
+    ['Remarks', customer.remarks || '—'],
     ['Status', titleCase(customer.status)], ['Added', String(customer.created_at).slice(0, 10)]]
     .map(([label, value]) => `<div class="flex justify-between gap-3 border-b border-outline py-1.5">
-            <dt class="text-on-surface-variant">${esc(label)}</dt><dd class="text-right">${esc(value)}</dd></div>`).join('')}
+            <dt class="text-on-surface-variant">${esc(label)}</dt><dd class="text-right break-all">${esc(value)}</dd></div>`).join('')}
         </dl>`,
   })}
         ${card({
@@ -954,6 +1403,16 @@ async function renderCustomer(container, params, ctx) {
     </div>`;
 
   ctx.on('tracker-back', () => ctx.navigate('#/tracker'));
+  ctx.on('customer-edit', () => {
+    openCustomerEditModal(ctx, { customerId: id, reference, products });
+  });
+  ctx.on('customer-delete', () => {
+    confirmDeleteCustomerModal(ctx, {
+      customerId: id,
+      customerName: customer.name,
+      businessName: customer.business_name || '',
+    });
+  });
   ctx.on('customer-status', async trigger => {
     try {
       await api.post(`/api/tracker/customers/${id}/status`, { status: trigger.dataset.status });
@@ -970,6 +1429,24 @@ async function renderCustomer(container, params, ctx) {
       await api.put(`/api/tracker/customers/${id}/fields`, { values });
       toast('Custom fields saved.');
     } catch (error) { toast(error.message, 'danger'); }
+  });
+  ctx.on('subscription-edit', trigger => {
+    openSubscriptionEditModal(ctx, {
+      subscriptionId: trigger.dataset.id,
+      customer,
+      subscriptions,
+      products,
+      plans,
+    });
+  });
+  ctx.on('subscription-delete', trigger => {
+    const sub = subscriptions.find(s => s.id === trigger.dataset.id);
+    confirmDeletePurchaseModal(ctx, {
+      subscriptionId: trigger.dataset.id,
+      productName: sub?.product_name || sub?.plan_label || 'Purchase',
+      planName: sub?.plan_name || sub?.plan_label || 'Plan',
+      purchaseDate: sub?.purchase_date || '',
+    });
   });
   ctx.on('subscription-add', () => {
     const node = modal({

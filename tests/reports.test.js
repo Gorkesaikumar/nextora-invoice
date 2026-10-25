@@ -251,3 +251,90 @@ test('business overview, sales comparisons, product analytics, and customer stat
   assert.match(stmtCsvBody, /Date,Type,Document/);
   assert.match(stmtCsvBody, /Running Balance/);
 });
+
+test('comprehensive business intelligence: monthly revenue, influencer registers, imports, and multi-format exports (PDF, Excel, CSV)', async () => {
+  const client = makeClient({ ip: '10.9.9.10' });
+  await client.login();
+  await configureIssuer(client);
+
+  // 1. Monthly Revenue endpoint
+  const monthlyRes = client.ok(await client.json('GET', '/api/reports/monthly-revenue?from=2026-04-01&to=2027-03-31'));
+  assert.ok(Array.isArray(monthlyRes.rows), 'Monthly revenue returns rows array');
+  assert.ok(monthlyRes.totals, 'Monthly revenue returns totals');
+  assert.ok('net_invoiced_minor' in monthlyRes.totals, 'Totals has net_invoiced_minor');
+
+  // 2. Client Register endpoint
+  const clientRegRes = client.ok(await client.json('GET', '/api/reports/client-register?from=2026-04-01&to=2027-03-31'));
+  assert.ok(Array.isArray(clientRegRes.rows), 'Client register returns rows array');
+  assert.ok(clientRegRes.totals, 'Client register returns totals');
+
+  // 3. Influencer Register endpoint
+  const infRegRes = client.ok(await client.json('GET', '/api/reports/influencer-register?from=2026-04-01&to=2027-03-31'));
+  assert.ok(Array.isArray(infRegRes.rows), 'Influencer register returns rows');
+  assert.ok(infRegRes.totals, 'Influencer register returns totals');
+
+  // 4. Influencer Sales Detail endpoint
+  const infSalesRes = client.ok(await client.json('GET', '/api/reports/influencer-sales?from=2026-04-01&to=2027-03-31'));
+  assert.ok(Array.isArray(infSalesRes.rows), 'Influencer sales detail returns rows');
+  assert.ok(infSalesRes.totals, 'Influencer sales detail returns totals');
+
+  // 5. Import Batches endpoint
+  const importBatchesRes = client.ok(await client.json('GET', '/api/reports/import-batches'));
+  assert.ok(Array.isArray(importBatchesRes.rows), 'Import batches returns rows');
+  assert.ok(importBatchesRes.totals, 'Import batches returns totals');
+
+  // 6. Test Multi-format Excel (.xlsx) exports across all sections
+  const excelSections = [
+    'overview',
+    'monthly_revenue',
+    'clients',
+    'invoices',
+    'quotations',
+    'products',
+    'influencers',
+    'influencer_sales',
+    'collections',
+    'receivables',
+    'tax',
+    'imports',
+  ];
+
+  for (const sec of excelSections) {
+    const res = await client.binary('GET', `/api/reports/export-excel?section=${sec}&from=2026-04-01&to=2027-03-31`);
+    assert.equal(res.status, 200, `Excel export for ${sec} returns 200`);
+    assert.match(res.headers.get('content-type'), /spreadsheetml\.sheet/, `Excel export for ${sec} has correct content-type`);
+    assert.ok(res.bytes.length > 500, `Excel workbook for ${sec} contains binary data (> 500 bytes)`);
+  }
+
+  // 7. Test PDF exports for all new sections
+  const newPdfSections = [
+    'monthly_revenue',
+    'influencers',
+    'influencer_sales',
+    'imports',
+  ];
+
+  for (const sec of newPdfSections) {
+    const res = await client.binary('GET', `/api/reports/export-pdf?section=${sec}&from=2026-04-01&to=2027-03-31`);
+    assert.equal(res.status, 200, `PDF export for ${sec} returns 200`);
+    assert.match(res.headers.get('content-type'), /application\/pdf/, `PDF export for ${sec} has application/pdf`);
+    const parsed = await PDFDocument.load(res.bytes);
+    assert.ok(parsed.getPageCount() >= 1, `PDF for ${sec} generates valid pages`);
+  }
+
+  // 8. Test CSV exports for new sections
+  const csvEndpoints = [
+    '/api/reports/monthly-revenue',
+    '/api/reports/client-register',
+    '/api/reports/influencer-register',
+    '/api/reports/influencer-sales',
+    '/api/reports/import-batches',
+  ];
+
+  for (const ep of csvEndpoints) {
+    const res = await client.binary('GET', `${ep}?format=csv&from=2026-04-01&to=2027-03-31`);
+    assert.equal(res.status, 200, `CSV export for ${ep} returns 200`);
+    const text = res.bytes.toString('utf8');
+    assert.ok(text.length > 10, `CSV for ${ep} returns non-empty CSV text`);
+  }
+});

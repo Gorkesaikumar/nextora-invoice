@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { assert, HttpError } from './domain.js';
+import { requireManager } from './service.js';
 import { audit } from './audit.js';
 import { readSpreadsheet, sanitizeCell } from './excel.js';
 import { percentOf, roundDiv, BP_PER_UNIT } from './money.js';
@@ -633,6 +634,185 @@ export async function listSalesBatches(db, { page = 1, limit = 20 } = {}) {
   return { batches: rows, total, page, limit };
 }
 
+export async function getSalesBatch(db, id) {
+  const { rows } = await db.query(`
+    SELECT b.id, b.filename, b.file_sha256, b.row_count, b.valid_row_count, b.invalid_row_count,
+           b.duplicate_row_count, b.status, b.notes, b.imported_at,
+           u.display_name AS imported_by_name, u.email AS imported_by_email
+    FROM inv.influencer_sales_batches b
+    JOIN inv.users u ON u.id = b.imported_by
+    WHERE b.id = $1
+  `, [id]);
+  assert(rows[0], 404, 'Sales batch not found or already deleted.', 'BATCH_NOT_FOUND');
+  const batch = rows[0];
+
+  const { rows: statusRows } = await db.query(`
+    SELECT
+      commission_status,
+      count(*)::integer AS count,
+      COALESCE(SUM(eligible_revenue_minor), 0)::bigint AS revenue_minor,
+      COALESCE(SUM(calculated_commission_minor), 0)::bigint AS commission_minor
+    FROM inv.influencer_sales_records
+    WHERE batch_id = $1
+    GROUP BY commission_status
+  `, [id]);
+
+  const { rows: records } = await db.query(`
+    SELECT r.id, r.serial_number, r.customer_name, r.business_name,
+           r.purchased_date::text AS purchased_date, r.product_name,
+           r.customer_location, r.raw_influencer_name, r.influencer_id,
+           r.sale_amount_minor, r.eligible_revenue_minor, r.calculated_commission_minor,
+           r.commission_status, r.is_revenue_verified,
+           i.display_name AS influencer_display_name
+    FROM inv.influencer_sales_records r
+    LEFT JOIN inv.influencers i ON i.id = r.influencer_id
+    WHERE r.batch_id = $1
+    ORDER BY r.serial_number ASC
+    LIMIT 100
+  `, [id]);
+
+  const hasPaidRecords = statusRows.some(s => s.commission_status === 'PAID' && Number(s.count) > 0);
+
+  return {
+    ...batch,
+    status_breakdown: statusRows.map(s => ({
+      ...s,
+      count: Number(s.count),
+      revenue_minor: Number(s.revenue_minor),
+      commission_minor: Number(s.commission_minor)
+    })),
+    records: records.map(r => ({
+      ...r,
+      sale_amount_minor: r.sale_amount_minor !== null ? Number(r.sale_amount_minor) : null,
+      eligible_revenue_minor: r.eligible_revenue_minor !== null ? Number(r.eligible_revenue_minor) : null,
+      calculated_commission_minor: r.calculated_commission_minor !== null ? Number(r.calculated_commission_minor) : null,
+    })),
+    can_delete: !hasPaidRecords,
+    has_paid_records: hasPaidRecords
+  };
+}
+
+export async function deleteSalesBatch(db, actor, batchId, { reason = '' } = {}) {
+  requireManager(actor);
+
+  // 1. Verify batch exists
+  const { rows: batchRows } = await db.query(`
+    SELECT id, filename, file_sha256, row_count, valid_row_count, duplicate_row_count, status, imported_at
+    FROM inv.influencer_sales_batches
+    WHERE id = $1
+  `, [batchId]);
+  assert(batchRows.length > 0, 404, 'Sales batch not found or already deleted.', 'BATCH_NOT_FOUND');
+  const batch = batchRows[0];
+
+  // 2. Check for protected financial records
+  const { rows: paidRecords } = await db.query(`
+    SELECT count(*)::integer AS paid_count
+    FROM inv.influencer_sales_records
+    WHERE batch_id = $1 AND commission_status = 'PAID'
+  `, [batchId]);
+  const paidCount = Number(paidRecords[0]?.paid_count || 0);
+
+  const { rows: paidAttrs } = await db.query(`
+    SELECT count(*)::integer AS paid_attr_count
+    FROM inv.influencer_attributions
+    WHERE id IN (SELECT id FROM inv.influencer_sales_records WHERE batch_id = $1)
+      AND status = 'PAID'
+  `, [batchId]);
+  const paidAttrCount = Number(paidAttrs[0]?.paid_attr_count || 0);
+
+  if (paidCount > 0 || paidAttrCount > 0) {
+    throw new HttpError(
+      409,
+      `Cannot delete batch "${batch.filename}": contains ${Math.max(paidCount, paidAttrCount)} finalized/paid commission record(s). Finalized financial payouts must be preserved.`,
+      'PROTECTED_FINANCIAL_RECORDS'
+    );
+  }
+
+  // 3. Perform atomic deletion in transaction
+  let deletedRecordsCount = 0;
+  let deletedAttributionsCount = 0;
+
+  await db.transaction(async tx => {
+    // A. Delete associated influencer attributions
+    const attrRes = await tx.query(`
+      DELETE FROM inv.influencer_attributions
+      WHERE id IN (SELECT id FROM inv.influencer_sales_records WHERE batch_id = $1)
+    `, [batchId]);
+    deletedAttributionsCount = attrRes.rowCount ?? 0;
+
+    // B. Delete associated sales records
+    const salesRes = await tx.query(`
+      DELETE FROM inv.influencer_sales_records
+      WHERE batch_id = $1
+    `, [batchId]);
+    deletedRecordsCount = salesRes.rowCount ?? 0;
+
+    // C. Delete batch metadata
+    await tx.query(`
+      DELETE FROM inv.influencer_sales_batches
+      WHERE id = $1
+    `, [batchId]);
+
+    // D. Permanent audit trail
+    await audit(tx, 'INFLUENCER_SALES_BATCH_DELETED', {
+      actorId: actor.id,
+      entityType: 'SALES_BATCH',
+      entityId: batchId,
+      metadata: {
+        batchId,
+        filename: batch.filename,
+        file_sha256: batch.file_sha256,
+        importedAt: batch.imported_at,
+        rowCount: batch.row_count,
+        validRowCount: batch.valid_row_count,
+        duplicateRowCount: batch.duplicate_row_count,
+        deletedSalesRecordsCount: deletedRecordsCount,
+        deletedAttributionsCount: deletedAttributionsCount,
+        deletedBy: actor.displayName || actor.email,
+        reason: reason || 'Administrator requested batch deletion'
+      }
+    });
+  });
+
+  return {
+    deleted: true,
+    batch_id: batchId,
+    filename: batch.filename,
+    deleted_records_count: deletedRecordsCount,
+    deleted_attributions_count: deletedAttributionsCount
+  };
+}
+
+export async function exportBatchSalesToExcel(db, batchId) {
+  const { rows: batchRows } = await db.query(`
+    SELECT * FROM inv.influencer_sales_batches WHERE id = $1
+  `, [batchId]);
+  assert(batchRows.length > 0, 404, 'Sales batch not found or already deleted.', 'BATCH_NOT_FOUND');
+  const batch = batchRows[0];
+
+  const { rows: records } = await db.query(`
+    SELECT r.*, i.display_name AS influencer_display_name
+    FROM inv.influencer_sales_records r
+    LEFT JOIN inv.influencers i ON i.id = r.influencer_id
+    WHERE r.batch_id = $1
+    ORDER BY r.serial_number ASC
+  `, [batchId]);
+
+  return await exportSalesToExcel({
+    records: records.map(r => ({
+      ...r,
+      purchased_date: r.purchased_date ? (r.purchased_date instanceof Date ? r.purchased_date.toISOString().slice(0, 10) : String(r.purchased_date).slice(0, 10)) : '',
+      expiry_date: r.expiry_date ? (r.expiry_date instanceof Date ? r.expiry_date.toISOString().slice(0, 10) : String(r.expiry_date).slice(0, 10)) : '',
+      sale_amount_minor: r.sale_amount_minor !== null ? Number(r.sale_amount_minor) : null,
+      eligible_revenue_minor: r.eligible_revenue_minor !== null ? Number(r.eligible_revenue_minor) : null,
+      calculated_commission_minor: r.calculated_commission_minor !== null ? Number(r.calculated_commission_minor) : null,
+      is_lifetime: Boolean(r.is_lifetime),
+      is_revenue_verified: Boolean(r.is_revenue_verified)
+    })),
+    filters: { batch: batch.filename }
+  });
+}
+
 export async function getSalesDashboardMetrics(db, { fromDate = '', toDate = '', productId = '', influencerId = '' } = {}) {
   const conditions = [];
   const binds = [];
@@ -656,17 +836,25 @@ export async function getSalesDashboardMetrics(db, { fromDate = '', toDate = '',
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
+  // Active influencers count
+  const { rows: actRows } = await db.query(`SELECT count(*)::integer AS count FROM inv.influencers WHERE status = 'ACTIVE'`);
+  const activeInfluencersCount = Number(actRows[0]?.count || 0);
+
   // KPI Metrics
   const summaryQuery = `
     SELECT
       count(*)::integer AS total_sales_records,
       count(CASE WHEN r.influencer_id IS NOT NULL THEN 1 END)::integer AS total_attributed_sales,
       count(DISTINCT r.influencer_id)::integer AS total_influencers_with_sales,
+      COALESCE(SUM(r.sale_amount_minor), 0)::bigint AS total_gross_sales_minor,
+      count(CASE WHEN r.eligible_revenue_minor IS NOT NULL AND r.eligible_revenue_minor > 0 THEN 1 END)::integer AS total_eligible_sales_count,
       COALESCE(SUM(CASE WHEN r.is_revenue_verified THEN r.eligible_revenue_minor ELSE 0 END), 0)::bigint AS verified_revenue_minor,
       COALESCE(SUM(CASE WHEN r.is_revenue_verified THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS total_calculated_commission_minor,
       COALESCE(SUM(CASE WHEN r.commission_status IN ('PENDING','VERIFIED') THEN COALESCE(r.calculated_commission_minor,0) ELSE 0 END), 0)::bigint AS pending_commission_minor,
       COALESCE(SUM(CASE WHEN r.commission_status = 'APPROVED' THEN COALESCE(r.calculated_commission_minor,0) ELSE 0 END), 0)::bigint AS approved_commission_minor,
       COALESCE(SUM(CASE WHEN r.commission_status = 'PAID' THEN COALESCE(r.calculated_commission_minor,0) ELSE 0 END), 0)::bigint AS paid_commission_minor,
+      count(CASE WHEN r.refund_amount_minor > 0 OR r.commission_status = 'REVERSED' THEN 1 END)::integer AS refunded_sales_count,
+      COALESCE(SUM(r.refund_amount_minor), 0)::bigint AS total_refund_amount_minor,
       count(CASE WHEN NOT r.is_revenue_verified THEN 1 END)::integer AS unverified_revenue_count
     FROM inv.influencer_sales_records r
     ${whereClause}
@@ -704,12 +892,17 @@ export async function getSalesDashboardMetrics(db, { fromDate = '', toDate = '',
       total_imported_records: Number(summary.total_sales_records || 0),
       total_valid_sales: Number(summary.total_attributed_sales || 0),
       total_influencers_with_sales: Number(summary.total_influencers_with_sales || 0),
+      total_gross_sales_minor: Number(summary.total_gross_sales_minor || 0),
+      total_eligible_sales_count: Number(summary.total_eligible_sales_count || 0),
       total_verified_revenue_minor: Number(summary.verified_revenue_minor || 0),
       total_calculated_commission_minor: Number(summary.total_calculated_commission_minor || 0),
       pending_commission_minor: Number(summary.pending_commission_minor || 0),
       approved_commission_minor: Number(summary.approved_commission_minor || 0),
       paid_commission_minor: Number(summary.paid_commission_minor || 0),
-      unverified_revenue_count: Number(summary.unverified_revenue_count || 0)
+      refunded_sales_count: Number(summary.refunded_sales_count || 0),
+      total_refund_amount_minor: Number(summary.total_refund_amount_minor || 0),
+      unverified_revenue_count: Number(summary.unverified_revenue_count || 0),
+      active_influencers_count: activeInfluencersCount,
     },
     influencers: influencerSummaries.map(inf => ({
       ...inf,
@@ -767,6 +960,10 @@ export async function listSalesRecords(db, {
       OR lower(r.customer_location) LIKE $${binds.length}
       OR lower(r.order_reference) LIKE $${binds.length}
       OR lower(r.raw_influencer_name) LIKE $${binds.length}
+      OR lower(COALESCE(i.display_name, '')) LIKE $${binds.length}
+      OR lower(COALESCE(i.legal_name, '')) LIKE $${binds.length}
+      OR lower(COALESCE(i.instagram_username, '')) LIKE $${binds.length}
+      OR lower(r.product_name) LIKE $${binds.length}
     )`);
   }
 
@@ -774,10 +971,19 @@ export async function listSalesRecords(db, {
 
   let orderBy = 'r.purchased_date DESC, r.serial_number ASC';
   if (sort === 'purchased_date_asc') orderBy = 'r.purchased_date ASC, r.serial_number ASC';
-  else if (sort === 'revenue_desc') orderBy = 'r.eligible_revenue_minor DESC NULLS LAST';
-  else if (sort === 'customer_asc') orderBy = 'r.customer_name ASC';
+  else if (sort === 'revenue_desc') orderBy = 'r.eligible_revenue_minor DESC NULLS LAST, r.purchased_date DESC';
+  else if (sort === 'revenue_asc') orderBy = 'r.eligible_revenue_minor ASC NULLS LAST, r.purchased_date DESC';
+  else if (sort === 'commission_desc') orderBy = 'r.calculated_commission_minor DESC NULLS LAST, r.purchased_date DESC';
+  else if (sort === 'commission_asc') orderBy = 'r.calculated_commission_minor ASC NULLS LAST, r.purchased_date DESC';
+  else if (sort === 'customer_asc') orderBy = 'r.customer_name ASC, r.purchased_date DESC';
+  else if (sort === 'customer_desc') orderBy = 'r.customer_name DESC, r.purchased_date DESC';
 
-  const countQuery = `SELECT count(*)::integer AS count FROM inv.influencer_sales_records r ${whereClause}`;
+  const countQuery = `
+    SELECT count(*)::integer AS count
+    FROM inv.influencer_sales_records r
+    LEFT JOIN inv.influencers i ON i.id = r.influencer_id
+    ${whereClause}
+  `;
   const total = (await db.query(countQuery, binds)).rows[0]?.count || 0;
 
   const offset = (page - 1) * limit;
@@ -788,7 +994,7 @@ export async function listSalesRecords(db, {
       r.expiry_date::text AS expiry_date, r.is_lifetime, r.customer_location,
       r.raw_influencer_name, r.influencer_id, r.order_reference,
       r.sale_amount_minor, r.discount_amount_minor, r.gst_rate_bp,
-      r.refund_amount_minor, r.eligible_revenue_minor, r.commission_basis,
+      r.gst_amount_minor, r.refund_amount_minor, r.eligible_revenue_minor, r.commission_basis,
       r.commission_rate_bp, r.calculated_commission_minor, r.commission_status,
       r.is_revenue_verified, r.revenue_source, r.created_at,
       i.display_name AS influencer_display_name,
@@ -806,14 +1012,25 @@ export async function listSalesRecords(db, {
   const { rows } = await db.query(dataQuery, [...binds, limit, offset]);
 
   return {
-    records: rows.map(r => ({
-      ...r,
-      sale_amount_minor: r.sale_amount_minor !== null ? Number(r.sale_amount_minor) : null,
-      eligible_revenue_minor: r.eligible_revenue_minor !== null ? Number(r.eligible_revenue_minor) : null,
-      calculated_commission_minor: r.calculated_commission_minor !== null ? Number(r.calculated_commission_minor) : null,
-      is_lifetime: Boolean(r.is_lifetime),
-      is_revenue_verified: Boolean(r.is_revenue_verified)
-    })),
+    records: rows.map(r => {
+      const saleMinor = r.sale_amount_minor !== null ? Number(r.sale_amount_minor) : null;
+      const eligibleMinor = r.eligible_revenue_minor !== null ? Number(r.eligible_revenue_minor) : null;
+      let gstMinor = Number(r.gst_amount_minor || 0);
+      if (gstMinor === 0 && saleMinor !== null && eligibleMinor !== null && saleMinor > eligibleMinor) {
+        gstMinor = saleMinor - eligibleMinor;
+      }
+      return {
+        ...r,
+        sale_amount_minor: saleMinor,
+        eligible_revenue_minor: eligibleMinor,
+        gst_amount_minor: gstMinor,
+        discount_amount_minor: Number(r.discount_amount_minor || 0),
+        refund_amount_minor: Number(r.refund_amount_minor || 0),
+        calculated_commission_minor: r.calculated_commission_minor !== null ? Number(r.calculated_commission_minor) : null,
+        is_lifetime: Boolean(r.is_lifetime),
+        is_revenue_verified: Boolean(r.is_revenue_verified)
+      };
+    }),
     total,
     page,
     limit
@@ -967,4 +1184,53 @@ export async function exportSalesToExcel({ records, influencer = null, filters =
   }
 
   return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+/* ---------------------------------------------------- CSV Export Generator */
+
+export async function exportSalesToCsv({ records, influencer = null, filters = {} }) {
+  const sanitize = val => {
+    let text = val === null || val === undefined ? '' : String(val);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+
+  const headers = [
+    'S.No.', 'Influencer Name', 'Instagram Handle', 'Customer Name', 'Business Name',
+    'Product Name', 'Purchased Date', 'Expiry Date', 'Customer Location', 'Order Reference',
+    'Gross Price (INR)', 'GST Amount (INR)', 'Net Eligible Value (INR)',
+    'Commission Rate', 'Calculated Commission (INR)', 'Commission Status', 'Attribution Source'
+  ];
+
+  const rows = records.map((r, idx) => {
+    const isVerified = r.is_revenue_verified && r.eligible_revenue_minor !== null;
+    const rateText = r.commission_rate_bp ? `${(r.commission_rate_bp / 100).toFixed(2)}%` : '-';
+    const grossPrice = r.sale_amount_minor !== null ? (r.sale_amount_minor / 100).toFixed(2) : '-';
+    const gstAmt = r.gst_amount_minor !== null ? (r.gst_amount_minor / 100).toFixed(2) : '-';
+    const netEligible = isVerified ? (r.eligible_revenue_minor / 100).toFixed(2) : '-';
+    const commAmt = isVerified ? (r.calculated_commission_minor / 100).toFixed(2) : '-';
+    const expText = r.is_lifetime ? 'Lifetime' : (r.expiry_date || '-');
+
+    return [
+      idx + 1,
+      r.influencer_display_name || r.raw_influencer_name || '-',
+      r.influencer_handle || '-',
+      r.customer_name,
+      r.business_name || '-',
+      r.product_name || '-',
+      r.purchased_date || '-',
+      expText,
+      r.customer_location || '-',
+      r.order_reference || '-',
+      grossPrice,
+      gstAmt,
+      netEligible,
+      rateText,
+      commAmt,
+      r.commission_status || 'PENDING',
+      r.revenue_source || 'IMPORTED'
+    ].map(sanitize).join(',');
+  });
+
+  return '\uFEFF' + [headers.map(sanitize).join(','), ...rows].join('\r\n');
 }

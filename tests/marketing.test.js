@@ -653,3 +653,127 @@ test('Client and product deletion protection and referential checks', async () =
   assert.equal(blockedProdDel.status, 409);
   assert.equal(blockedProdDel.data.code, 'PRODUCT_IN_USE');
 });
+
+test('Single Source of Truth: Canonical Contract Snapshot, HTML Preview, and PDF parity', async () => {
+  const client = await withAdmin(13);
+
+  // 1. Upload initial brand assets (company logo and product logo)
+  const initialCompanyLogo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNk+M9QzwAEjAwMDAwAFAcDAXj3s30AAAAASUVORK5CYII=';
+  const initialProductLogo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+  await client.json('POST', '/api/settings/company-logo', { logo: initialCompanyLogo });
+  await client.json('POST', '/api/marketing/product-logo', { logo: initialProductLogo });
+
+  // 2. Create influencer & draft agreement with BOTH logos
+  const inf = client.ok(await client.json('POST', '/api/marketing/influencers', sampleInfluencer({
+    legal_name: 'Priya Sharma',
+    instagram_username: '@priyasharma',
+    email: 'priya@example.com',
+  }))).influencer;
+
+  const agr = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(inf.id, {
+    branding_mode: 'BOTH',
+    commission_basis_points: 1250, // 12.50%
+  }))).agreement;
+
+  // 3. Inspect Canonical Preview
+  const preview = client.ok(await client.json('GET', `/api/marketing/agreements/${agr.id}/preview`));
+  const s = preview.snapshot;
+  assert.equal(s.contract_number, agr.contract_number);
+  assert.equal(s.is_finalized, false);
+  assert.equal(s.company_logo.exists, true);
+  assert.equal(s.product_logo.exists, true);
+  assert.ok(s.company_logo.dataUri.startsWith('data:image/png;base64,'));
+  assert.ok(s.product_logo.dataUri.startsWith('data:image/png;base64,'));
+
+  // Verify preview HTML contains canonical 4-column metadata box
+  const html = preview.html;
+  assert.ok(html.includes('CONTRACT NUMBER'), 'html preview includes CONTRACT NUMBER');
+  assert.ok(html.includes('EFFECTIVE START DATE'), 'html preview includes EFFECTIVE START DATE');
+  assert.ok(html.includes('REVENUE SHARE'), 'html preview includes REVENUE SHARE');
+  assert.ok(html.includes('12.50%'), 'html preview includes 12.50%');
+  assert.ok(html.includes('GST TREATMENT'), 'html preview includes GST TREATMENT');
+  assert.ok(html.includes('nc-a4-page'), 'html preview structured into A4 paginated sheets');
+
+  // Verify deliverables table in HTML
+  assert.ok(html.includes('Instagram Reel'));
+  assert.ok(html.includes('Product Demonstration'));
+
+  // Verify calculation table in HTML
+  assert.ok(html.includes('PRICE (INCL. GST)'));
+  assert.ok(html.includes('NET VALUE (EX. GST)'));
+  assert.ok(html.includes('INFLUENCER COMM.'));
+
+  // 4. Generate and download PDF
+  const genResult = client.ok(await client.json('POST', `/api/marketing/agreements/${agr.id}/generate-pdf`));
+  assert.equal(genResult.success, true);
+
+  const pdfRes = await client.binary('GET', `/api/marketing/agreements/${agr.id}/pdf`);
+  assert.equal(pdfRes.status, 200);
+  const pdfPages = extractPdf(pdfRes.bytes);
+  assert.equal(pdfPages.length, 3, 'agreement PDF has exact 3 pages');
+
+  const pdfFullText = pdfPages.map(p => p.text.join('\n')).join('\n');
+  assert.ok(pdfFullText.includes(agr.contract_number));
+  assert.ok(pdfFullText.includes('12.50%'));
+  assert.ok(pdfFullText.includes('Priya Sharma'));
+  assert.ok(pdfFullText.includes('@priyasharma'));
+  assert.ok(pdfFullText.includes('Instagram Reel'));
+  assert.ok(pdfFullText.includes('Product Demonstration'));
+  assert.ok(pdfFullText.includes('PRICE (INCL. GST)'));
+  assert.ok(pdfFullText.includes('NET VALUE (EX. GST)'));
+
+  // 5. Draft edit invalidates cached PDF
+  const editDraft = client.ok(await client.json('PATCH', `/api/marketing/agreements/${agr.id}`, {
+    commission_basis_points: 1500, // Change to 15.00%
+  }));
+  assert.equal(editDraft.agreement.commission_basis_points, 1500);
+
+  const previewAfterEdit = client.ok(await client.json('GET', `/api/marketing/agreements/${agr.id}/preview`));
+  assert.equal(previewAfterEdit.snapshot.commercial_terms.commission_percentage, '15.00');
+  assert.equal(previewAfterEdit.snapshot.pdf_generated_at, null, 'editing draft clears pdf_generated_at');
+  assert.ok(previewAfterEdit.html.includes('15.00%'));
+
+  // 6. Finalize agreement & verify immutability
+  // Transition: DRAFT -> SENT -> ACCEPTED
+  client.ok(await client.json('POST', `/api/marketing/agreements/${agr.id}/status`, { action: 'SEND' }));
+  const accepted = client.ok(await client.json('POST', `/api/marketing/agreements/${agr.id}/status`, { action: 'ACCEPT' }));
+  assert.equal(accepted.agreement.status, 'ACCEPTED');
+
+  const finalizedPreview = client.ok(await client.json('GET', `/api/marketing/agreements/${agr.id}/preview`));
+  assert.equal(finalizedPreview.snapshot.is_finalized, true);
+  const savedCompanyLogo = finalizedPreview.snapshot.company_logo.dataUri;
+
+  // Modifying finalized contract directly is forbidden
+  const patchFinalized = await client.json('PATCH', `/api/marketing/agreements/${agr.id}`, {
+    commission_basis_points: 2000,
+  });
+  assert.equal(patchFinalized.status, 400);
+
+  // Now simulate changing the global company logo to something new
+  const newCompanyLogo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';
+  await client.json('POST', '/api/settings/company-logo', { logo: newCompanyLogo });
+
+  // Finalized agreement MUST preserve its historical snapshot and original logo!
+  const previewFrozen = client.ok(await client.json('GET', `/api/marketing/agreements/${agr.id}/preview`));
+  assert.equal(previewFrozen.snapshot.company_logo.dataUri, savedCompanyLogo, 'finalized agreement keeps historical company logo');
+
+  // Finalized PDF also maintains historical snapshot and logo
+  const frozenPdf = await client.binary('GET', `/api/marketing/agreements/${agr.id}/pdf`);
+  assert.equal(frozenPdf.status, 200);
+
+  // 7. Verify Contract with NO_LOGOS (TEXT_ONLY)
+  const noLogoAgr = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(inf.id, {
+    branding_mode: 'TEXT_ONLY',
+  }))).agreement;
+
+  const noLogoPreview = client.ok(await client.json('GET', `/api/marketing/agreements/${noLogoAgr.id}/preview`));
+  assert.equal(noLogoPreview.snapshot.company_logo.exists, false);
+  assert.equal(noLogoPreview.snapshot.product_logo.exists, false);
+  assert.ok(!noLogoPreview.html.includes('<img'), 'no logo contract has no img tags in preview HTML');
+
+  const noLogoPdfRes = await client.binary('GET', `/api/marketing/agreements/${noLogoAgr.id}/pdf`);
+  assert.equal(noLogoPdfRes.status, 200);
+  const noLogoPages = extractPdf(noLogoPdfRes.bytes);
+  assert.equal(noLogoPages.length, 3);
+});

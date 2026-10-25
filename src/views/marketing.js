@@ -4,6 +4,7 @@ import {
   statusBadge, modal, closeModal, toast, statusLabel, badge, stat, icon,
 } from '../lib/ui.js';
 import { softwareAgreementForm, renderSoftwareAgreementPreview } from './software-contract-editor.js';
+import { DATE_PRESETS, resolveDatePreset } from '../lib/date-presets.js';
 
 const STATE_OPTIONS = reference => [
   { value: '', label: 'Not selected' },
@@ -554,13 +555,21 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
       closeModal();
       const agr = res.agreement;
       toast(existing ? 'Agreement updated.' : 'Agreement created as draft.');
-      ctx.navigate(`#/marketing/contracts/${agr.id}/preview`);
+      if (location.hash === `#/marketing/contracts/${agr.id}/preview`) {
+        ctx.rerender();
+      } else {
+        ctx.navigate(`#/marketing/contracts/${agr.id}/preview`);
+      }
     } catch (error) {
       const warnContainer = node.querySelector('#agreement-warnings');
       const details = error.fields?.length
-        ? error.fields.map(item => `${item.field}: ${item.message}`).join(' · ')
+        ? error.fields.map(item => `${item.field ? `${item.field}: ` : ''}${item.message}`).join(' · ')
         : error.message;
-      if (warnContainer) warnContainer.innerHTML = alertBox(details, 'danger');
+      if (warnContainer) {
+        warnContainer.innerHTML = alertBox(details, 'danger');
+        warnContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      toast(details || 'Failed to save agreement.', 'danger');
     }
   });
 }
@@ -1215,19 +1224,10 @@ async function renderContractPreview(container, agreementId, ctx) {
     return;
   }
 
-  let brandAssets = { product_logo: { exists: false }, company_logo: { exists: false } };
-  try {
-    brandAssets = await api.get('/api/marketing/brand-assets');
-  } catch { /* ignore */ }
-
   const s = res.snapshot;
-  const c = s.commercial_terms;
-  const calc = s.illustrative_calculation;
-  const deliverables = s.deliverables || [];
-
-  const mode = s.branding_mode || 'BOTH';
-  const showCompany = (mode === 'BOTH' || mode === 'COMPANY_ONLY') && brandAssets.company_logo?.exists;
-  const showProduct = (mode === 'BOTH' || mode === 'PRODUCT_ONLY') && brandAssets.product_logo?.exists;
+  const warnings = [];
+  if (s.company_logo?.warning) warnings.push(s.company_logo.warning);
+  if (s.product_logo?.warning) warnings.push(s.product_logo.warning);
 
   container.innerHTML = `
     ${pageHeader({
@@ -1237,6 +1237,7 @@ async function renderContractPreview(container, agreementId, ctx) {
       actions: `
         ${button({ label: 'Generate PDF', action: 'generate-pdf-btn', variant: 'primary', icon: 'picture_as_pdf' })}
         ${button({ label: 'Download PDF', action: 'download-pdf-btn', variant: 'secondary', icon: 'download' })}
+        ${button({ label: 'Download HTML', action: 'download-html-btn', variant: 'secondary', icon: 'code' })}
         ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
           ? button({ label: 'Edit Draft', action: 'edit-preview-draft', variant: 'secondary' })
           : ''}
@@ -1251,284 +1252,49 @@ async function renderContractPreview(container, agreementId, ctx) {
     })}
 
     <!-- Status Banner -->
-    <div class="mb-6 flex flex-wrap items-center justify-between gap-4 border border-outline bg-surface p-4">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-4 border border-outline bg-surface p-4">
       <div class="flex items-center gap-3">
         <span class="text-xs text-on-surface-variant">Contract Status:</span>
         ${statusBadge(s.status)}
-        ${s.pdf_generated_at ? `<span class="text-xs text-on-surface-variant font-mono">Last Generated: ${date(s.pdf_generated_at.slice(0, 10))}</span>` : ''}
+        ${s.is_finalized
+          ? `<span class="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+               ${icon('lock', '!text-[13px]')} Sealed & Immutable Snapshot
+             </span>`
+          : `<span class="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+               ${icon('edit_note', '!text-[13px]')} Editable Draft
+             </span>`
+        }
+        ${s.pdf_generated_at ? `<span class="text-xs text-on-surface-variant font-mono">PDF Generated: ${date(s.pdf_generated_at.slice(0, 10))}</span>` : '<span class="text-xs text-amber-700 italic">PDF not yet compiled</span>'}
       </div>
       <div class="text-xs text-on-surface-variant">
         Effective: <span class="font-medium text-on-surface">${date(s.effective_start_date)}</span> until <span class="font-medium text-on-surface">${s.is_indefinite ? 'Indefinite' : date(s.effective_end_date)}</span>
       </div>
     </div>
 
-    <!-- The 10-Section Legal Agreement Document Container -->
-    <div class="mx-auto max-w-4xl border border-outline bg-surface p-8 sm:p-12 shadow-sm font-body text-sm leading-relaxed text-on-surface">
-      
-      <!-- Document Header with Company & Product Brand Blocks -->
-      <div class="flex flex-col sm:flex-row justify-between items-start gap-6 border-b border-outline pb-6 mb-8">
-        <div class="flex items-start gap-4">
-          ${showCompany ? `
-            <img src="${brandAssets.company_logo.dataUri}" alt="Company Logo" class="max-h-14 max-w-[150px] object-contain shrink-0" />
-          ` : ''}
-          <div>
-            <h2 class="font-headline text-lg font-bold uppercase tracking-tight text-primary">${esc(s.business.business_name)}</h2>
-            <p class="text-xs text-on-surface-variant">${esc(s.business.legal_name || s.business.business_name)}</p>
-            <p class="text-xs text-on-surface-variant mt-1">${esc(s.business.address)}</p>
-            <p class="text-xs text-on-surface-variant">${[s.business.email, s.business.phone, s.business.website].filter(Boolean).join(' · ')}</p>
-            <p class="font-mono text-xs text-on-surface-variant mt-0.5">GSTIN: ${esc(s.business.gstin || '—')} · PAN: ${esc(s.business.pan || '—')}</p>
-          </div>
+    ${warnings.length > 0 && !s.is_finalized ? `
+      <div class="mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+        <div class="font-bold flex items-center gap-1.5 mb-1">
+          ${icon('warning', '!text-[16px] text-amber-700')} Brand Asset Notice (Draft)
         </div>
-        <div class="sm:text-right flex flex-col items-end">
-          ${showProduct ? `
-            <div class="mb-2">
-              <img src="${brandAssets.product_logo.dataUri}" alt="Product Logo" class="max-h-12 max-w-[140px] object-contain" />
-            </div>
-          ` : ''}
-          <div class="inline-block border border-outline bg-surface-dim px-3 py-1 text-xs font-mono font-bold">
-            CONTRACT #${esc(s.contract_number)}
-          </div>
-          <div class="mt-2 text-xs text-on-surface-variant">Product: <span class="font-bold text-on-surface">${esc(s.product_name)}</span></div>
-          <div class="text-xs text-on-surface-variant">Partnership Version ${s.version || 1}</div>
+        <ul class="list-disc pl-5 space-y-0.5">
+          ${warnings.map(w => `<li>${esc(w)}</li>`).join('')}
+        </ul>
+      </div>
+    ` : ''}
+
+    ${s.is_finalized ? `
+      <div class="mb-4 rounded border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-900 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          ${icon('lock', '!text-[16px] text-emerald-700')}
+          <span><strong>Finalized Contract Snapshot:</strong> This agreement is sealed. Stored logos and commercial terms will not change if brand settings are modified.</span>
         </div>
+        <span class="font-mono text-[11px] text-emerald-800">Version ${s.version || 1}</span>
       </div>
+    ` : ''}
 
-      <!-- Agreement Title -->
-      <div class="text-center mb-8">
-        <h1 class="font-headline text-xl font-bold tracking-tight uppercase">${esc(s.title)}</h1>
-        <p class="text-xs text-on-surface-variant mt-1">Marketing Partnership &amp; Commercial Revenue-Sharing Terms</p>
-      </div>
-
-      <!-- Section 1: Parties -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 1: Parties to the Agreement
-        </h3>
-        <p class="text-xs mb-3">This Influencer Marketing and Revenue-Sharing Agreement is entered into by and between:</p>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div class="border border-outline p-3 bg-surface-dim">
-            <p class="label-technical">Brand &amp; Product Owner</p>
-            <p class="font-bold text-sm mt-1">${esc(s.business.business_name)}</p>
-            <p class="text-xs text-on-surface-variant">Brand and owner of ${esc(s.product_name)}</p>
-            <p class="text-xs text-on-surface-variant mt-1">${esc(s.business.address)}</p>
-          </div>
-          <div class="border border-outline p-3 bg-surface-dim">
-            <p class="label-technical">Influencer / Marketing Partner</p>
-            <p class="font-bold text-sm mt-1">${esc(s.influencer.legal_name)}</p>
-            <p class="text-xs text-on-surface-variant">Instagram: <span class="font-mono font-semibold">${esc(s.influencer.instagram_username)}</span></p>
-            <p class="text-xs text-on-surface-variant">${esc([s.influencer.address, s.influencer.city, s.influencer.postal_code, s.influencer.country].filter(Boolean).join(', '))}</p>
-            <p class="text-xs text-on-surface-variant">Email: ${esc(s.influencer.email || '—')} · Phone: ${esc(s.influencer.phone || '—')}</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section 2: Purpose -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 2: Purpose of the Partnership
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_2_purpose)}
-        </div>
-      </div>
-
-      <!-- Section 3: Scope of Work & Deliverables -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 3: Scope of Work and Responsibilities
-        </h3>
-        <p class="text-xs mb-3">The Influencer agrees to produce, publish, and maintain the following marketing deliverables:</p>
-        ${deliverables.length ? `
-          <div class="overflow-x-auto border border-outline">
-            <table class="w-full text-left text-xs">
-              <thead class="bg-surface-dim border-b border-outline font-mono text-[11px] uppercase">
-                <tr>
-                  <th class="p-2.5">Deliverable</th>
-                  <th class="p-2.5 text-center w-24">Min. Qty</th>
-                  <th class="p-2.5">Frequency</th>
-                  <th class="p-2.5">Required Instagram Handles</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-outline">
-                ${deliverables.map(d => {
-                  const isReel = String(d.type || '').toLowerCase().includes('reel');
-                  const isDemo = String(d.type || '').toLowerCase().includes('demonstration');
-                  const qty = isReel ? Math.max(4, Number(d.quantity || 4)) : (d.quantity || 1);
-                  const handles = (isReel || isDemo)
-                    ? '@nextora_pos, @nextora_creations'
-                    : (d.required_tags || '@nextora_pos, @nextora_creations');
-                  return `
-                    <tr>
-                      <td class="p-2.5 font-medium">${esc(d.type)}</td>
-                      <td class="p-2.5 text-center font-mono font-bold">${qty}</td>
-                      <td class="p-2.5 text-on-surface-variant">${esc(d.frequency || 'Monthly')}</td>
-                      <td class="p-2.5 font-mono text-[11px] text-primary font-medium">${esc(handles)}</td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        ` : `<p class="text-xs text-on-surface-variant italic">Deliverables to be agreed in written campaign schedules.</p>`}
-      </div>
-
-      <!-- Section 4: Revenue-Sharing Terms -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 4: Revenue-Sharing Terms &amp; Calculation Mechanics
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed mb-4">
-          ${esc(s.clauses.section_4_revenue_terms)}
-        </div>
-
-        <!-- Section 4 Products & Calculation Table -->
-        ${calc ? `
-          <div class="my-6 border border-outline bg-surface-dim p-4">
-            <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-primary mb-3">
-              Illustrative Calculation Example (Non-Binding)
-            </h4>
-            <div class="overflow-x-auto border border-outline bg-surface mb-4">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-surface-dim border-b border-outline font-mono text-[10px] uppercase text-on-surface-variant">
-                  <tr>
-                    <th class="p-2.5">Product</th>
-                    <th class="p-2.5 text-right">Price (Incl. GST)</th>
-                    <th class="p-2.5 text-center">GST Rate</th>
-                    <th class="p-2.5 text-right">GST Amount</th>
-                    <th class="p-2.5 text-right">Net Value (Ex. GST)</th>
-                    <th class="p-2.5 text-center">Comm. %</th>
-                    <th class="p-2.5 text-right">Influencer Comm.</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-outline">
-                  ${(calc.products || [
-                    { name: 'Nextora POS Mobile App', gross_sale_minor: 599900, gst_rate_percent: '18%', gst_amount_minor: 91510, net_sale_minor: 508390, commission_rate_percent: `${calc.commission_percentage || '50.00'}%`, commission_minor: 254195 },
-                    { name: 'Nextora POS Desktop', gross_sale_minor: 799900, gst_rate_percent: '18%', gst_amount_minor: 122019, net_sale_minor: 677881, commission_rate_percent: `${calc.commission_percentage || '50.00'}%`, commission_minor: 338941 }
-                  ]).map(p => `
-                    <tr>
-                      <td class="p-2.5 font-medium">${esc(p.name)}</td>
-                      <td class="p-2.5 text-right font-mono">${money(p.gross_sale_minor)}</td>
-                      <td class="p-2.5 text-center font-mono text-on-surface-variant">${esc(p.gst_rate_percent)}</td>
-                      <td class="p-2.5 text-right font-mono text-on-surface-variant">${money(p.gst_amount_minor)}</td>
-                      <td class="p-2.5 text-right font-mono font-medium">${money(p.net_sale_minor)}</td>
-                      <td class="p-2.5 text-center font-mono text-primary">${esc(p.commission_rate_percent)}</td>
-                      <td class="p-2.5 text-right font-mono font-bold text-cyan-accent">${money(p.commission_minor)}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-
-            <!-- GST Classification Cards (Telangana Intra-State vs Interstate) -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs mb-3">
-              <div class="border border-outline bg-surface p-3">
-                <p class="label-technical text-[10px] text-primary">Telangana Intra-State Supplies (CGST 9% + SGST 9%)</p>
-                <div class="mt-2 space-y-1 text-[11px] text-on-surface-variant">
-                  <div>• <span class="font-medium text-on-surface">Mobile App:</span> CGST ₹457.55 + SGST ₹457.55 = Total GST ₹915.10</div>
-                  <div>• <span class="font-medium text-on-surface">Desktop:</span> CGST ₹610.10 + SGST ₹610.09 = Total GST ₹1,220.19</div>
-                </div>
-              </div>
-              <div class="border border-outline bg-surface p-3">
-                <p class="label-technical text-[10px] text-primary">Interstate Supplies (IGST 18%)</p>
-                <div class="mt-2 space-y-1 text-[11px] text-on-surface-variant">
-                  <div>• <span class="font-medium text-on-surface">Mobile App:</span> IGST ₹915.10 (18%)</div>
-                  <div>• <span class="font-medium text-on-surface">Desktop:</span> IGST ₹1,220.19 (18%)</div>
-                  <div class="text-[10px] text-on-surface-variant italic mt-1">Commission calculated strictly on Net Sale Value excluding GST.</div>
-                </div>
-              </div>
-            </div>
-
-            <p class="text-[10px] text-on-surface-variant italic border-t border-outline pt-2">
-              ${esc(calc.products_disclaimer || calc.disclaimer || 'Illustrative calculation based on the listed retail prices and the stated GST rate. Actual commission is calculated on verified eligible sales under this agreement, subject to applicable cancellations, refunds, chargebacks, and other agreed adjustments.')}
-            </p>
-          </div>
-        ` : ''}
-      </div>
-
-      <!-- Section 5: Conduct -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 5: Marketing Obligations and Professional Conduct
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_5_conduct_obligations)}
-        </div>
-      </div>
-
-      <!-- Section 6: IP -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 6: Brand Assets and Intellectual Property
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_6_brand_intellectual_property)}
-        </div>
-      </div>
-
-      <!-- Section 7: Payment & Invoicing -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 7: Payment Schedule, Invoicing &amp; Taxes
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_7_payment_invoicing)}
-        </div>
-      </div>
-
-      <!-- Section 8: Term & Termination -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 8: Term, Termination &amp; Post-Termination Rights
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_8_term_termination)}
-        </div>
-      </div>
-
-      <!-- Section 9: Legal Terms -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 9: General Legal Provisions
-        </h3>
-        <div class="text-xs space-y-2 whitespace-pre-line text-on-surface-variant leading-relaxed">
-          ${esc(s.clauses.section_9_general_legal)}
-        </div>
-      </div>
-
-      ${s.special_terms ? `
-        <div class="mb-8">
-          <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-            Special Agreed Terms &amp; Conditions
-          </h3>
-          <p class="text-xs text-on-surface-variant whitespace-pre-line leading-relaxed">${esc(s.special_terms)}</p>
-        </div>
-      ` : ''}
-
-      <!-- Section 10: Signatures -->
-      <div class="mt-12 pt-6 border-t-2 border-outline">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-6">
-          Section 10: Acceptance and Signatures
-        </h3>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-8 text-xs">
-          <div class="border border-outline p-4 bg-surface">
-            <p class="label-technical mb-6">For Nextora Creations:</p>
-            <div class="border-b border-outline pb-1 mb-2"></div>
-            <p class="font-bold">${esc(s.business.signatory_name)}</p>
-            <p class="text-on-surface-variant">${esc(s.business.signatory_title)}</p>
-            <p class="text-on-surface-variant mt-2 font-mono text-[11px]">Date: ____________________</p>
-          </div>
-          <div class="border border-outline p-4 bg-surface">
-            <p class="label-technical mb-6">For Influencer / Marketing Partner:</p>
-            <div class="border-b border-outline pb-1 mb-2"></div>
-            <p class="font-bold">${esc(s.influencer.legal_name)}</p>
-            <p class="text-on-surface-variant">${esc(s.influencer.instagram_username)}</p>
-            <p class="text-on-surface-variant mt-2 font-mono text-[11px]">Date: ____________________</p>
-          </div>
-        </div>
-        <p class="text-[10px] text-on-surface-variant italic mt-6 text-center">
-          Note: Previewing or downloading this document does not constitute proof of signature. Both parties must execute this Agreement via verified electronic signature or physical ink signature before active commercial settlement begins.
-        </p>
-      </div>
+    <!-- Canonical Influencer Agreement Document Preview (Single Source of Truth) -->
+    <div class="mx-auto max-w-5xl overflow-x-auto pb-8">
+      ${res.html || '<p class="p-8 text-center text-on-surface-variant">Unable to load contract preview HTML.</p>'}
     </div>
   `;
 
@@ -1544,6 +1310,12 @@ async function renderContractPreview(container, agreementId, ctx) {
   ctx.on('download-pdf-btn', async () => {
     try {
       await api.openDocument(`/api/marketing/agreements/${agreementId}/pdf`, { download: true });
+    } catch (err) { toast(err.message, 'danger'); }
+  });
+
+  ctx.on('download-html-btn', async () => {
+    try {
+      await api.openDocument(`/api/marketing/agreements/${agreementId}/html`, { download: true });
     } catch (err) { toast(err.message, 'danger'); }
   });
 
@@ -1804,7 +1576,14 @@ async function renderBrandAssets(container, ctx) {
 export async function renderSalesImport(container, ctx) {
   let previewData = null;
   let remappings = {};
-  const { batches } = await api.get('/api/marketing/sales/batches').catch(() => ({ batches: [] }));
+  let batches = [];
+
+  async function loadBatches() {
+    const res = await api.get('/api/marketing/sales/batches').catch(() => ({ batches: [] }));
+    batches = res.batches || [];
+  }
+
+  await loadBatches();
 
   function renderView() {
     container.innerHTML = `
@@ -1985,11 +1764,12 @@ export async function renderSalesImport(container, ctx) {
                     <th class="p-3 text-center">Duplicates</th>
                     <th class="p-3">Imported By</th>
                     <th class="p-3">Status</th>
+                    <th class="p-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-outline">
                   ${batches.map(b => `
-                    <tr>
+                    <tr data-batch-id="${esc(b.id)}">
                       <td class="p-3 whitespace-nowrap">${date(b.imported_at)}</td>
                       <td class="p-3 font-semibold font-mono">${esc(b.filename)}</td>
                       <td class="p-3 text-center font-mono">${b.row_count}</td>
@@ -1997,6 +1777,35 @@ export async function renderSalesImport(container, ctx) {
                       <td class="p-3 text-center font-mono text-amber-700">${b.duplicate_row_count}</td>
                       <td class="p-3">${esc(b.imported_by_name || '-')}</td>
                       <td class="p-3">${statusBadge(b.status)}</td>
+                      <td class="p-3 text-right whitespace-nowrap">
+                        <div class="inline-flex items-center gap-1.5 justify-end">
+                          <button type="button"
+                            data-action="view-batch-details"
+                            data-id="${esc(b.id)}"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-on-surface-variant hover:text-on-surface hover:bg-surface-dim border border-outline rounded"
+                            title="View Batch Details">
+                            ${icon('visibility', '!text-[14px]')}<span>Details</span>
+                          </button>
+                          <a href="/api/marketing/sales/batches/${esc(b.id)}/export.xlsx"
+                            download
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-on-surface-variant hover:text-on-surface hover:bg-surface-dim border border-outline rounded"
+                            title="Download Batch Excel Records">
+                            ${icon('download', '!text-[14px]')}<span>Download</span>
+                          </a>
+                          <button type="button"
+                            data-action="delete-batch"
+                            data-id="${esc(b.id)}"
+                            data-filename="${esc(b.filename)}"
+                            data-date="${esc(date(b.imported_at))}"
+                            data-rows="${b.row_count}"
+                            data-valid="${b.valid_row_count}"
+                            data-duplicates="${b.duplicate_row_count}"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded font-medium transition-colors"
+                            title="Delete Batch">
+                            ${icon('delete', '!text-[14px] text-red-600')}<span>Delete</span>
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   `).join('')}
                 </tbody>
@@ -2080,79 +1889,520 @@ export async function renderSalesImport(container, ctx) {
     });
   }
 
+  // Register Delete Batch Confirmation Action
+  ctx.on('delete-batch', trigger => {
+    const batchId = trigger.dataset.id;
+    const filename = trigger.dataset.filename;
+    const importDate = trigger.dataset.date;
+    const totalRows = trigger.dataset.rows;
+    const validRows = trigger.dataset.valid;
+    const duplicates = trigger.dataset.duplicates;
+
+    const node = modal({
+      title: 'Delete Import Batch?',
+      body: `
+        <div class="space-y-4">
+          <p class="text-sm text-on-surface">
+            Are you sure you want to permanently delete import batch <strong class="font-mono text-primary font-bold">${esc(filename)}</strong>?
+          </p>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 bg-surface-dim border border-outline text-xs">
+            <div>
+              <div class="text-[11px] font-mono uppercase text-on-surface-variant">Import Date</div>
+              <div class="font-semibold mt-0.5">${esc(importDate)}</div>
+            </div>
+            <div>
+              <div class="text-[11px] font-mono uppercase text-on-surface-variant">Total Rows</div>
+              <div class="font-mono font-bold mt-0.5">${esc(totalRows)}</div>
+            </div>
+            <div>
+              <div class="text-[11px] font-mono uppercase text-on-surface-variant">Valid Records</div>
+              <div class="font-mono font-bold text-emerald-700 mt-0.5">${esc(validRows)}</div>
+            </div>
+            <div>
+              <div class="text-[11px] font-mono uppercase text-on-surface-variant">Duplicates</div>
+              <div class="font-mono font-bold text-amber-700 mt-0.5">${esc(duplicates)}</div>
+            </div>
+          </div>
+
+          <div class="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 space-y-1.5">
+            <div class="font-semibold flex items-center gap-1.5">
+              ${icon('error', '!text-[16px] text-amber-700')}
+              <span>Records Affected:</span>
+            </div>
+            <p>
+              This will remove the selected import batch and its eligible imported sales records. Related report totals may change. Records referenced by protected business transactions may prevent deletion.
+            </p>
+            <p class="text-[11px] text-amber-800">
+              Shared entities (influencer profiles, contracts, customers, and invoices) are never deleted.
+            </p>
+          </div>
+
+          <div id="delete-batch-error" class="hidden p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700"></div>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        <button type="button" id="btn-confirm-delete-batch"
+          class="inline-flex items-center justify-center gap-2 border font-medium px-3.5 py-2 text-sm bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          ${icon('delete', '!text-[18px]')}<span>Delete Batch</span>
+        </button>
+      `
+    });
+
+    const confirmBtn = node.querySelector('#btn-confirm-delete-batch');
+    const errBox = node.querySelector('#delete-batch-error');
+
+    confirmBtn?.addEventListener('click', async () => {
+      confirmBtn.disabled = true;
+      confirmBtn.innerHTML = `<span>Deleting...</span>`;
+      errBox.classList.add('hidden');
+      errBox.textContent = '';
+
+      try {
+        const res = await api.delete(`/api/marketing/sales/batches/${batchId}`);
+        closeModal();
+        toast(`Import batch "${filename}" (${res.deleted_records_count} records) deleted successfully.`);
+        await loadBatches();
+        renderView();
+      } catch (err) {
+        confirmBtn.disabled = false;
+        confirmBtn.innerHTML = `${icon('delete', '!text-[18px]')}<span>Delete Batch</span>`;
+        errBox.textContent = err.message || 'Failed to delete batch.';
+        errBox.classList.remove('hidden');
+      }
+    });
+  });
+
+  // Register View Batch Details Action
+  ctx.on('view-batch-details', async trigger => {
+    const batchId = trigger.dataset.id;
+    try {
+      const data = await api.get(`/api/marketing/sales/batches/${batchId}`);
+      modal({
+        title: `Batch Details: ${data.filename}`,
+        size: 'wide',
+        body: `
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-surface-dim border border-outline text-xs">
+              <div>
+                <span class="text-[11px] font-mono uppercase text-on-surface-variant block">Import Date</span>
+                <span class="font-semibold">${date(data.imported_at)}</span>
+              </div>
+              <div>
+                <span class="text-[11px] font-mono uppercase text-on-surface-variant block">Imported By</span>
+                <span class="font-semibold">${esc(data.imported_by_name || '-')}</span>
+              </div>
+              <div>
+                <span class="text-[11px] font-mono uppercase text-on-surface-variant block">Status</span>
+                <span>${statusBadge(data.status)}</span>
+              </div>
+              <div>
+                <span class="text-[11px] font-mono uppercase text-on-surface-variant block">Total Rows</span>
+                <span class="font-mono font-bold">${data.row_count} (${data.valid_row_count} valid, ${data.duplicate_row_count} dupes)</span>
+              </div>
+            </div>
+
+            <div class="text-[11px] font-mono text-on-surface-variant bg-surface p-2 border border-outline break-all">
+              <strong>SHA-256:</strong> ${esc(data.file_sha256)}
+            </div>
+
+            ${data.notes ? `
+              <div class="text-xs p-2 bg-surface border border-outline">
+                <span class="font-semibold text-on-surface-variant">Batch Notes:</span> ${esc(data.notes)}
+              </div>
+            ` : ''}
+
+            <div>
+              <h3 class="font-headline text-xs font-semibold uppercase text-on-surface-variant mb-2">
+                Imported Sales Records (${data.records?.length || 0} loaded)
+              </h3>
+              <div class="max-h-60 overflow-y-auto border border-outline">
+                <table class="w-full text-left text-xs">
+                  <thead class="border-b border-outline bg-surface-dim font-mono uppercase text-[10px] text-on-surface-variant sticky top-0">
+                    <tr>
+                      <th class="p-2">S.No.</th>
+                      <th class="p-2">Customer</th>
+                      <th class="p-2">Product</th>
+                      <th class="p-2">Purchased</th>
+                      <th class="p-2">Influencer</th>
+                      <th class="p-2 text-right">Sale Amount</th>
+                      <th class="p-2 text-right">Commission</th>
+                      <th class="p-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-outline">
+                    ${(data.records || []).map(r => `
+                      <tr>
+                        <td class="p-2 font-mono">${r.serial_number}</td>
+                        <td class="p-2 font-semibold">${esc(r.customer_name)}</td>
+                        <td class="p-2">${esc(r.product_name)}</td>
+                        <td class="p-2 whitespace-nowrap">${r.purchased_date ? date(r.purchased_date) : '-'}</td>
+                        <td class="p-2">${esc(r.influencer_display_name || r.raw_influencer_name || '-')}</td>
+                        <td class="p-2 text-right font-mono">${r.sale_amount_minor !== null ? money(r.sale_amount_minor) : '-'}</td>
+                        <td class="p-2 text-right font-mono">${r.calculated_commission_minor !== null ? money(r.calculated_commission_minor) : '-'}</td>
+                        <td class="p-2">${statusBadge(r.commission_status)}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        `,
+        footer: `
+          <a href="/api/marketing/sales/batches/${esc(batchId)}/export.xlsx" download
+            class="btn btn-secondary text-xs inline-flex items-center gap-1.5 mr-auto">
+            ${icon('download', '!text-[14px]')}<span>Download Excel</span>
+          </a>
+          ${button({ label: 'Close', action: 'close-modal' })}
+        `
+      });
+    } catch (err) {
+      toast(err.message || 'Failed to load batch details.', 'danger');
+    }
+  });
+
   renderView();
 }
 
 /* ---------------------------------------------------- Influencer Sales Reports */
 
+/* ---------------------------------------------------- Influencer Sales Reports */
+
 export async function renderSalesReports(container, params, ctx) {
-  let search = '';
-  let fromDate = '';
-  let toDate = '';
-  let productId = '';
+  let search = ctx.filters.search || '';
+  let preset = ctx.filters.preset || '';
+  let fromDate = ctx.filters.from || '';
+  let toDate = ctx.filters.to || '';
+  let productId = ctx.filters.productId || '';
+  let influencerId = ctx.filters.influencerId || '';
+  let status = ctx.filters.status || '';
+  let page = ctx.page || 1;
+  const limit = 25;
+  let sort = ctx.filters.sort || 'purchased_date_desc';
+  let viewTab = ctx.filters.viewTab || 'transactions'; // 'transactions' | 'partners'
 
   async function loadAndRender() {
-    container.innerHTML = loading();
+    container.innerHTML = loading('Loading Influencer Sales Reports…');
+
+    // Date range validation
+    let dateWarning = '';
+    if (fromDate && toDate && fromDate > toDate) {
+      dateWarning = alertBox("Invalid date range: 'From Date' cannot be later than 'To Date'. Please adjust the date selection.", 'warn');
+    }
+
     try {
-      const data = await api.get(query('/api/marketing/sales/dashboard', { search, fromDate, toDate, productId }));
+      // Parallel fetch: Reference influencers list, Aggregated Dashboard KPIs, and Detailed Paginated Sales
+      const [allInfluencersRes, data, salesData] = await Promise.all([
+        api.get('/api/marketing/influencers?limit=1000').catch(() => ({ influencers: [] })),
+        api.get(`/api/marketing/sales/dashboard${query({ fromDate, toDate, productId, influencerId })}`),
+        api.get(`/api/marketing/sales${query({ influencerId, search, fromDate, toDate, productId, status, page, limit, sort })}`),
+      ]);
+
+      const allInfluencers = allInfluencersRes.influencers || [];
       const kpis = data.kpis || {};
-      const influencers = data.influencers || [];
+      const influencerSummaries = data.influencers || [];
+      const salesRecords = salesData.records || [];
+      const totalSalesCount = salesData.total || 0;
+
+      const exportParams = { influencerId, search, fromDate, toDate, productId, status };
+      const hasActiveFilters = Boolean(search || fromDate || toDate || productId || influencerId || status || preset);
 
       container.innerHTML = `
         ${pageHeader({
           title: 'Influencer Sales Reports',
           subtitle: 'Track attributed customer purchases, calculate revenue share, and export individual or consolidated financial reports.',
           actions: `
-            <a href="/api/marketing/sales/consolidated-report.pdf" target="_blank" class="btn btn-secondary inline-flex items-center gap-2">
-              ${icon('picture_as_pdf', '!text-[18px]')}<span>Consolidated PDF</span>
-            </a>
-            <a href="/api/marketing/sales/export.xlsx" download class="btn btn-secondary inline-flex items-center gap-2">
-              ${icon('download', '!text-[18px]')}<span>Export All (Excel)</span>
-            </a>
-            <a href="#/marketing/import" class="btn btn-primary inline-flex items-center gap-2">
-              ${icon('upload_file', '!text-[18px]')}<span>Import Sales Excel</span>
-            </a>
+            <div class="flex flex-wrap items-center gap-2">
+              ${button({ label: 'Consolidated PDF', action: 'export-pdf', icon: 'picture_as_pdf', variant: 'secondary' })}
+              ${button({ label: 'Export Excel', action: 'export-excel', icon: 'download', variant: 'secondary' })}
+              ${button({ label: 'Export CSV', action: 'export-csv', icon: 'download', variant: 'secondary' })}
+              <a href="#/marketing/import" class="btn btn-primary inline-flex items-center gap-2">
+                ${icon('upload_file', '!text-[18px]')}<span>Import Sales Excel</span>
+              </a>
+            </div>
           `,
         })}
 
         ${tabs('reports')}
 
+        ${dateWarning ? `<div class="mb-4">${dateWarning}</div>` : ''}
+
         <div class="space-y-6">
-          <!-- KPI Summary Cards -->
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-on-surface-variant font-mono">TOTAL ORDERS</p><p class="text-xl font-bold">${kpis.total_valid_sales || 0}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-on-surface-variant font-mono">INFLUENCERS</p><p class="text-xl font-bold">${kpis.total_influencers_with_sales || 0}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-emerald-700 font-mono">VERIFIED REVENUE</p><p class="text-xl font-bold text-emerald-700">${money(kpis.total_verified_revenue_minor || 0)}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-blue-700 font-mono">CALCULATED COMM</p><p class="text-xl font-bold text-blue-700">${money(kpis.total_calculated_commission_minor || 0)}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-amber-700 font-mono">PENDING PAYOUT</p><p class="text-xl font-bold text-amber-700">${money(kpis.pending_commission_minor || 0)}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-emerald-800 font-mono">SETTLED / PAID</p><p class="text-xl font-bold text-emerald-800">${money(kpis.paid_commission_minor || 0)}</p></div>` })}
-            ${card({ body: `<div class="p-3"><p class="text-[10px] text-on-surface-variant font-mono">UNVERIFIED SALES</p><p class="text-xl font-bold ${kpis.unverified_revenue_count > 0 ? 'text-amber-800 font-semibold' : ''}">${kpis.unverified_revenue_count || 0}</p></div>` })}
+          <!-- KPI Summary Cards: Clearly distinguish gross sales, eligible net sales excluding GST, and commissions -->
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-on-surface-variant font-mono">TOTAL RECORDED SALES</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-on-surface">${money(kpis.total_gross_sales_minor || 0)}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">${kpis.total_valid_sales || 0} order${kpis.total_valid_sales === 1 ? '' : 's'} in period</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-emerald-800 font-mono">ELIGIBLE NET SALES</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-emerald-700">${money(kpis.total_verified_revenue_minor || 0)}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">Net sales excl. GST</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-blue-800 font-mono">COMMISSION EARNED</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-blue-700">${money(kpis.total_calculated_commission_minor || 0)}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">Calculated rev share</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-amber-800 font-mono">PENDING SETTLEMENT</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-amber-700">${money(kpis.pending_commission_minor || 0)}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">Awaiting payment</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-emerald-900 font-mono">COMMISSION PAID</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-emerald-800">${money(kpis.paid_commission_minor || 0)}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">Settled &amp; finalized</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] text-on-surface-variant font-mono">ACTIVE INFLUENCERS</span>
+                  <p class="num mt-1 font-headline text-xl font-bold text-on-surface">${kpis.active_influencers_count || 0}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">${kpis.total_influencers_with_sales || 0} with sales in period</p>
+                </div>
+              `
+            })}
+            ${card({
+              body: `
+                <div class="p-3.5">
+                  <span class="label-technical block text-[10px] ${kpis.refunded_sales_count > 0 ? 'text-red-700' : 'text-on-surface-variant'} font-mono">REFUNDS / CANCELLED</span>
+                  <p class="num mt-1 font-headline text-xl font-bold ${kpis.refunded_sales_count > 0 ? 'text-red-700' : 'text-on-surface'}">${kpis.refunded_sales_count || 0}</p>
+                  <p class="mt-1 text-[11px] text-on-surface-variant">${kpis.total_refund_amount_minor > 0 ? money(kpis.total_refund_amount_minor) : 'None tracked'}</p>
+                </div>
+              `
+            })}
           </div>
 
-          <!-- Influencer Performance Table -->
-          ${card({
+          <!-- Date Filters & Filter Toolbar -->
+          <form id="sales-report-filters" class="border border-outline bg-surface p-4 space-y-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7">
+              <div>
+                <label class="label-technical mb-1 block text-xs">Date Preset</label>
+                <select name="preset" id="filter-preset" class="field text-xs w-full">
+                  <option value="">Custom / Select preset...</option>
+                  ${DATE_PRESETS.map(p => `<option value="${p.key}" ${preset === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+                </select>
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">From Date</label>
+                <input type="date" name="from" id="filter-from" value="${esc(fromDate)}" class="field text-xs w-full">
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">To Date</label>
+                <input type="date" name="to" id="filter-to" value="${esc(toDate)}" class="field text-xs w-full">
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">Influencer Partner</label>
+                <select name="influencerId" id="filter-influencer" class="field text-xs w-full">
+                  <option value="">All Influencers</option>
+                  ${allInfluencers.map(inf => `
+                    <option value="${inf.id}" ${influencerId === inf.id ? 'selected' : ''}>
+                      ${esc(inf.display_name)} (${esc(inf.instagram_username || '-')})
+                    </option>
+                  `).join('')}
+                </select>
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">Commission Status</label>
+                <select name="status" id="filter-status" class="field text-xs w-full">
+                  <option value="">All Statuses</option>
+                  <option value="VERIFIED" ${status === 'VERIFIED' ? 'selected' : ''}>Verified</option>
+                  <option value="PENDING" ${status === 'PENDING' ? 'selected' : ''}>Pending</option>
+                  <option value="APPROVED" ${status === 'APPROVED' ? 'selected' : ''}>Approved</option>
+                  <option value="PAID" ${status === 'PAID' ? 'selected' : ''}>Paid</option>
+                  <option value="REVERSED" ${status === 'REVERSED' ? 'selected' : ''}>Reversed</option>
+                  <option value="DISPUTED" ${status === 'DISPUTED' ? 'selected' : ''}>Disputed</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">Sort By</label>
+                <select name="sort" id="filter-sort" class="field text-xs w-full">
+                  <option value="purchased_date_desc" ${sort === 'purchased_date_desc' ? 'selected' : ''}>Purchase Date (Newest)</option>
+                  <option value="purchased_date_asc" ${sort === 'purchased_date_asc' ? 'selected' : ''}>Purchase Date (Oldest)</option>
+                  <option value="revenue_desc" ${sort === 'revenue_desc' ? 'selected' : ''}>Eligible Value (High to Low)</option>
+                  <option value="revenue_asc" ${sort === 'revenue_asc' ? 'selected' : ''}>Eligible Value (Low to High)</option>
+                  <option value="commission_desc" ${sort === 'commission_desc' ? 'selected' : ''}>Commission (High to Low)</option>
+                  <option value="commission_asc" ${sort === 'commission_asc' ? 'selected' : ''}>Commission (Low to High)</option>
+                  <option value="customer_asc" ${sort === 'customer_asc' ? 'selected' : ''}>Customer Name (A-Z)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="label-technical mb-1 block text-xs">Search Text</label>
+                <input type="text" name="search" id="filter-search" value="${esc(search)}" placeholder="Customer, business, ref..." class="field text-xs w-full">
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between gap-3 pt-1 border-t border-outline/50">
+              <p class="text-[11px] text-on-surface-variant">
+                ${hasActiveFilters ? '<span class="text-primary font-medium">Filtered active</span> · ' : ''}
+                Values exclude GST from commissionable base per partner agreement.
+              </p>
+              <div class="flex items-center gap-2">
+                ${button({ label: 'Reset', action: 'reset-sales-filters', size: 'sm' })}
+                ${button({ label: 'Apply Filters', type: 'submit', variant: 'primary', size: 'sm' })}
+              </div>
+            </div>
+          </form>
+
+          <!-- Report View Switcher Tabs -->
+          <div class="flex border-b border-outline">
+            <button type="button" data-action="switch-sales-view" data-tab="transactions"
+              class="border-b-2 px-5 py-2.5 text-xs font-medium transition-colors ${viewTab === 'transactions' ? 'border-primary font-bold text-primary' : 'border-transparent text-on-surface-variant hover:text-on-surface'}">
+              Sales Transactions (${totalSalesCount})
+            </button>
+            <button type="button" data-action="switch-sales-view" data-tab="partners"
+              class="border-b-2 px-5 py-2.5 text-xs font-medium transition-colors ${viewTab === 'partners' ? 'border-primary font-bold text-primary' : 'border-transparent text-on-surface-variant hover:text-on-surface'}">
+              Influencer Performance Breakdown (${influencerSummaries.length})
+            </button>
+          </div>
+
+          <!-- TAB 1: Detailed Sales Transactions Table -->
+          ${viewTab === 'transactions' ? card({
+            title: `Attributed Sales Transactions`,
+            subtitle: `Showing ${salesRecords.length} of ${totalSalesCount} recorded customer transactions matching active criteria.`,
+            body: totalSalesCount === 0 ? (
+              hasActiveFilters ? emptyState({
+                icon: 'search_off',
+                title: 'No Sales Matching Filters',
+                message: 'No sales records match the selected date range or filter criteria. Try adjusting or clearing your date range.',
+                actionLabel: 'Reset All Filters',
+                action: 'reset-sales-filters'
+              }) : emptyState({
+                icon: 'receipt_long',
+                title: 'No Sales Recorded Yet',
+                message: 'No influencer sales transactions have been imported or attributed yet. Upload customer sales in Excel format to populate reports.',
+                actionLabel: 'Import Sales Excel',
+                action: 'goto-import'
+              })
+            ) : `
+              <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs min-w-[1100px]">
+                  <thead class="border-b border-outline bg-surface-dim font-mono uppercase text-[10px] text-on-surface-variant">
+                    <tr>
+                      <th class="p-2.5">S.No.</th>
+                      <th class="p-2.5">Date</th>
+                      <th class="p-2.5">Influencer Partner</th>
+                      <th class="p-2.5">Customer &amp; Business</th>
+                      <th class="p-2.5">Product</th>
+                      <th class="p-2.5">Ref / Order</th>
+                      <th class="p-2.5 text-right">Gross Price</th>
+                      <th class="p-2.5 text-right">GST Amount</th>
+                      <th class="p-2.5 text-right font-bold text-emerald-800">Net Eligible</th>
+                      <th class="p-2.5 text-center">Comm %</th>
+                      <th class="p-2.5 text-right font-bold text-blue-800">Commission</th>
+                      <th class="p-2.5">Status</th>
+                      <th class="p-2.5">Source</th>
+                      <th class="p-2.5 text-right">Settlement Action</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-outline">
+                    ${salesRecords.map((r, idx) => {
+                      const rowNum = (page - 1) * limit + idx + 1;
+                      const isVerified = r.is_revenue_verified && r.eligible_revenue_minor !== null;
+                      const commPercentStr = r.commission_rate_bp ? `${(r.commission_rate_bp / 100).toFixed(1)}%` : '-';
+                      return `
+                        <tr class="hover:bg-surface-dim transition-colors">
+                          <td class="p-2.5 font-mono text-[11px] text-on-surface-variant">${rowNum}</td>
+                          <td class="p-2.5 whitespace-nowrap font-mono text-[11px]">${date(r.purchased_date)}</td>
+                          <td class="p-2.5">
+                            <p class="font-semibold text-on-surface">${esc(r.influencer_display_name || r.raw_influencer_name || 'Unattributed')}</p>
+                            <p class="font-mono text-[10px] text-on-surface-variant">${esc(r.influencer_handle ? `@${r.influencer_handle.replace(/^@/, '')}` : '-')}</p>
+                          </td>
+                          <td class="p-2.5">
+                            <p class="font-medium text-on-surface">${esc(r.customer_name)}</p>
+                            <p class="text-[10px] text-on-surface-variant">${esc(r.business_name || '-')}</p>
+                          </td>
+                          <td class="p-2.5">
+                            <p class="text-on-surface">${esc(r.product_name)}</p>
+                            <p class="text-[10px] text-on-surface-variant">${r.is_lifetime ? 'Lifetime' : (r.expiry_date ? `Exp: ${date(r.expiry_date)}` : '')}</p>
+                          </td>
+                          <td class="p-2.5 font-mono text-[11px] text-on-surface-variant">${esc(r.order_reference || '—')}</td>
+                          <td class="p-2.5 text-right font-mono">${r.sale_amount_minor !== null ? money(r.sale_amount_minor) : '—'}</td>
+                          <td class="p-2.5 text-right font-mono text-on-surface-variant">${money(r.gst_amount_minor || 0)}</td>
+                          <td class="p-2.5 text-right font-mono font-semibold text-emerald-700">
+                            ${isVerified ? money(r.eligible_revenue_minor) : '<span class="text-[10px] text-amber-700 italic">Awaiting</span>'}
+                          </td>
+                          <td class="p-2.5 text-center font-mono text-[11px]">${commPercentStr}</td>
+                          <td class="p-2.5 text-right font-mono font-bold text-blue-700">
+                            ${isVerified ? money(r.calculated_commission_minor) : '<span class="text-[10px] text-on-surface-variant italic">—</span>'}
+                          </td>
+                          <td class="p-2.5 whitespace-nowrap">${statusBadge(r.commission_status)}</td>
+                          <td class="p-2.5 whitespace-nowrap">${badge(r.revenue_source || 'IMPORTED', 'neutral')}</td>
+                          <td class="p-2.5 text-right whitespace-nowrap">
+                            <select class="sale-status-quick-select text-[10px] py-1 px-1.5 border border-outline bg-surface rounded" data-id="${r.id}">
+                              <option value="VERIFIED" ${r.commission_status === 'VERIFIED' ? 'selected' : ''}>Verified</option>
+                              <option value="PENDING" ${r.commission_status === 'PENDING' ? 'selected' : ''}>Pending</option>
+                              <option value="APPROVED" ${r.commission_status === 'APPROVED' ? 'selected' : ''}>Approved</option>
+                              <option value="PAID" ${r.commission_status === 'PAID' ? 'selected' : ''}>Paid</option>
+                              <option value="REVERSED" ${r.commission_status === 'REVERSED' ? 'selected' : ''}>Reversed</option>
+                              <option value="DISPUTED" ${r.commission_status === 'DISPUTED' ? 'selected' : ''}>Disputed</option>
+                            </select>
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+              ${pagination({ page: salesData.page, total: totalSalesCount, limit: salesData.limit })}
+            `
+          }) : ''}
+
+          <!-- TAB 2: Influencer Partner Performance Summary Table -->
+          ${viewTab === 'partners' ? card({
             title: 'Influencer Performance & Revenue-Sharing Summary',
-            body: influencers.length === 0 ? `
+            subtitle: 'Aggregated sales totals and commission entitlements per partner creator.',
+            body: influencerSummaries.length === 0 ? `
               <div class="p-12 text-center text-xs text-on-surface-variant">
-                No attributed sales records found. Upload a customer sales spreadsheet in the <a href="#/marketing/import" class="text-primary font-semibold underline">Import Sales Excel</a> section.
+                No attributed sales records found for active partners in this date period.
               </div>
             ` : `
               <div class="overflow-x-auto">
-                <table class="w-full text-left text-xs">
+                <table class="w-full text-left text-xs min-w-[860px]">
                   <thead class="border-b border-outline bg-surface-dim font-mono uppercase text-[11px] text-on-surface-variant">
                     <tr>
                       <th class="p-3">Influencer</th>
                       <th class="p-3 text-center">Total Sales</th>
-                      <th class="p-3 text-right">Verified Revenue</th>
+                      <th class="p-3 text-right">Verified Net Revenue</th>
                       <th class="p-3 text-center">Commission Rate</th>
                       <th class="p-3 text-right">Calculated Comm</th>
                       <th class="p-3 text-right">Pending</th>
                       <th class="p-3 text-right">Paid</th>
-                      <th class="p-3 text-right">Actions</th>
+                      <th class="p-3 text-right">Reports &amp; Drilldown</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-outline">
-                    ${influencers.map(inf => `
+                    ${influencerSummaries.map(inf => `
                       <tr class="hover:bg-surface-dim transition-colors">
                         <td class="p-3">
                           <p class="font-semibold text-on-surface">${esc(inf.display_name)}</p>
@@ -2172,15 +2422,18 @@ export async function renderSalesReports(container, params, ctx) {
                         <td class="p-3 text-right font-mono text-emerald-700">${money(inf.paid_commission_minor)}</td>
                         <td class="p-3 text-right">
                           <div class="flex items-center justify-end gap-1.5">
-                            <button type="button" class="btn btn-secondary text-xs py-1 px-2.5 btn-view-sales" data-id="${inf.influencer_id}">
+                            <button type="button" class="btn btn-secondary text-xs py-1 px-2.5 btn-view-sales" data-action="view-partner-sales" data-id="${inf.influencer_id}">
                               ${icon('visibility', '!text-[14px]')}<span>View Sales</span>
                             </button>
-                            <a href="/api/marketing/influencers/${inf.influencer_id}/sales/report.pdf" target="_blank" class="btn btn-secondary text-xs py-1 px-2" title="Generate &amp; Download PDF">
+                            <button type="button" class="btn btn-secondary text-xs py-1 px-2 btn-dl-inf-pdf" data-action="download-partner-pdf" data-id="${inf.influencer_id}" title="Download Partner PDF Report">
                               ${icon('picture_as_pdf', '!text-[14px]')}
-                            </a>
-                            <a href="/api/marketing/influencers/${inf.influencer_id}/sales/export.xlsx" download class="btn btn-secondary text-xs py-1 px-2" title="Export Excel">
+                            </button>
+                            <button type="button" class="btn btn-secondary text-xs py-1 px-2 btn-dl-inf-xlsx" data-action="export-partner-xlsx" data-id="${inf.influencer_id}" title="Export Partner Excel">
                               ${icon('download', '!text-[14px]')}
-                            </a>
+                            </button>
+                            <button type="button" class="btn btn-secondary text-xs py-1 px-2 btn-dl-inf-csv" data-action="export-partner-csv" data-id="${inf.influencer_id}" title="Export Partner CSV">
+                              <span class="font-mono text-[10px]">CSV</span>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2189,115 +2442,346 @@ export async function renderSalesReports(container, params, ctx) {
                 </table>
               </div>
             `
-          })}
+          }) : ''}
         </div>
       `;
 
-      // Attach view sales drilldown modal handler
+      // Preset auto-populator
+      const presetSelect = container.querySelector('#filter-preset');
+      const fromInput = container.querySelector('#filter-from');
+      const toInput = container.querySelector('#filter-to');
+      if (presetSelect && fromInput && toInput) {
+        presetSelect.addEventListener('change', () => {
+          if (presetSelect.value && presetSelect.value !== 'custom') {
+            const resolved = resolveDatePreset(presetSelect.value);
+            fromInput.value = resolved.from || '';
+            toInput.value = resolved.to || '';
+          }
+        });
+      }
+
+      // Filter Form Submit
+      const filterForm = container.querySelector('#sales-report-filters');
+      if (filterForm) {
+        filterForm.addEventListener('submit', event => {
+          event.preventDefault();
+          const fd = new FormData(filterForm);
+          search = String(fd.get('search') || '').trim();
+          preset = String(fd.get('preset') || '');
+          fromDate = String(fd.get('from') || '');
+          toDate = String(fd.get('to') || '');
+          influencerId = String(fd.get('influencerId') || '');
+          status = String(fd.get('status') || '');
+          sort = String(fd.get('sort') || 'purchased_date_desc');
+          page = 1;
+
+          ctx.setFilters({ search, preset, from: fromDate, to: toDate, influencerId, status, sort, viewTab });
+          ctx.setPage(1);
+          loadAndRender();
+        });
+      }
+
+      // Quick status update dropdowns in transactions table
+      container.querySelectorAll('.sale-status-quick-select').forEach(sel => {
+        sel.addEventListener('change', async () => {
+          const saleId = sel.dataset.id;
+          const newStatus = sel.value;
+          try {
+            await api.post(`/api/marketing/sales/${saleId}/status`, { status: newStatus });
+            toast(`Commission status updated to ${newStatus}`);
+            loadAndRender();
+          } catch (err) {
+            toast(err.message || 'Status update failed.', 'danger');
+            loadAndRender();
+          }
+        });
+      });
+
+      // View sales drilldown modal in partners table
       container.querySelectorAll('.btn-view-sales').forEach(btn => {
         btn.addEventListener('click', async () => {
           const infId = btn.dataset.id;
           await openInfluencerSalesModal(infId, ctx, loadAndRender);
         });
       });
+
+      // Individual partner export buttons
+      container.querySelectorAll('.btn-dl-inf-pdf').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const infId = btn.dataset.id;
+          try {
+            await api.openDocument(`/api/marketing/influencers/${infId}/sales/report.pdf${query({ fromDate, toDate, productId })}`, { download: false });
+          } catch (err) {
+            toast(err.message || 'PDF report generation failed.', 'danger');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-dl-inf-xlsx').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const infId = btn.dataset.id;
+          try {
+            await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.xlsx${query({ fromDate, toDate, productId, search, status })}`, { download: true });
+          } catch (err) {
+            toast(err.message || 'Excel export failed.', 'danger');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-dl-inf-csv').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const infId = btn.dataset.id;
+          try {
+            await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.csv${query({ fromDate, toDate, productId, search, status })}`, { download: true });
+          } catch (err) {
+            toast(err.message || 'CSV export failed.', 'danger');
+          }
+        });
+      });
+
     } catch (err) {
-      container.innerHTML = `<div class="p-8 text-center text-red-600">${esc(err.message)}</div>`;
+      container.innerHTML = `
+        ${pageHeader({
+          title: 'Influencer Sales Reports',
+          subtitle: 'Track attributed customer purchases, calculate revenue share, and export individual or consolidated financial reports.',
+        })}
+        ${tabs('reports')}
+        <div class="my-6 space-y-4">
+          ${alertBox(`Failed to load sales reports: ${esc(err.message || 'Unexpected server error')}`, 'danger')}
+          <div class="flex items-center gap-2">
+            ${button({ label: 'Try Again', action: 'retry-sales-reports', variant: 'primary', icon: 'refresh' })}
+            <a href="#/marketing" class="btn btn-secondary inline-flex items-center gap-2">
+              ${icon('arrow_back', '!text-[18px]')}<span>Back to Marketing</span>
+            </a>
+          </div>
+        </div>
+      `;
     }
   }
+
+  // Action Registrations
+  ctx.on('retry-sales-reports', () => loadAndRender());
+
+  ctx.on('reset-sales-filters', () => {
+    search = '';
+    preset = '';
+    fromDate = '';
+    toDate = '';
+    influencerId = '';
+    status = '';
+    sort = 'purchased_date_desc';
+    page = 1;
+    ctx.setFilters({ viewTab });
+    ctx.setPage(1);
+    loadAndRender();
+  });
+
+  ctx.on('goto-import', () => {
+    location.hash = '#/marketing/import';
+  });
+
+  ctx.on('switch-sales-view', trigger => {
+    viewTab = trigger.dataset.tab || 'transactions';
+    ctx.setFilters({ ...ctx.filters, viewTab });
+    loadAndRender();
+  });
+
+  ctx.on('page-prev', () => {
+    if (page > 1) {
+      page -= 1;
+      ctx.setPage(page);
+      loadAndRender();
+    }
+  });
+
+  ctx.on('page-next', () => {
+    page += 1;
+    ctx.setPage(page);
+    loadAndRender();
+  });
+
+  ctx.on('export-pdf', async () => {
+    try {
+      await api.openDocument(`/api/marketing/sales/consolidated-report.pdf${query({ fromDate, toDate, productId, influencerId })}`, { download: false });
+    } catch (err) {
+      toast(err.message || 'PDF export failed.', 'danger');
+    }
+  });
+
+  ctx.on('export-excel', async () => {
+    try {
+      await api.openDocument(`/api/marketing/sales/export.xlsx${query({ influencerId, search, fromDate, toDate, productId, status })}`, { download: true });
+    } catch (err) {
+      toast(err.message || 'Excel export failed.', 'danger');
+    }
+  });
+
+  ctx.on('export-csv', async () => {
+    try {
+      await api.openDocument(`/api/marketing/sales/export.csv${query({ influencerId, search, fromDate, toDate, productId, status })}`, { download: true });
+    } catch (err) {
+      toast(err.message || 'CSV export failed.', 'danger');
+    }
+  });
+
+  ctx.on('view-partner-sales', async trigger => {
+    const infId = trigger.dataset.id;
+    await openInfluencerSalesModal(infId, ctx, loadAndRender);
+  });
+
+  ctx.on('download-partner-pdf', async trigger => {
+    const infId = trigger.dataset.id;
+    try {
+      await api.openDocument(`/api/marketing/influencers/${infId}/sales/report.pdf${query({ fromDate, toDate, productId })}`, { download: false });
+    } catch (err) {
+      toast(err.message || 'PDF report generation failed.', 'danger');
+    }
+  });
+
+  ctx.on('export-partner-xlsx', async trigger => {
+    const infId = trigger.dataset.id;
+    try {
+      await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.xlsx${query({ fromDate, toDate, productId, search, status })}`, { download: true });
+    } catch (err) {
+      toast(err.message || 'Excel export failed.', 'danger');
+    }
+  });
+
+  ctx.on('export-partner-csv', async trigger => {
+    const infId = trigger.dataset.id;
+    try {
+      await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.csv${query({ fromDate, toDate, productId, search, status })}`, { download: true });
+    } catch (err) {
+      toast(err.message || 'CSV export failed.', 'danger');
+    }
+  });
 
   await loadAndRender();
 }
 
 async function openInfluencerSalesModal(infId, ctx, onRefresh) {
-  const res = await api.get(`/api/marketing/influencers/${infId}/sales?limit=100`);
-  const influencer = res.influencer;
-  const records = res.records || [];
+  try {
+    const res = await api.get(`/api/marketing/influencers/${infId}/sales?limit=100`);
+    const influencer = res.influencer;
+    const records = res.records || [];
 
-  const m = modal({
-    title: `Attributed Sales — ${influencer.display_name}`,
-    body: `
-      <div class="space-y-4">
-        <div class="flex flex-col sm:flex-row items-center justify-between gap-3 border-b border-outline pb-3">
-          <div>
-            <p class="font-mono text-xs text-on-surface-variant">Instagram: ${esc(influencer.instagram_username || '-')} | Legal Name: ${esc(influencer.legal_name)}</p>
-            <p class="text-xs text-on-surface-variant">Showing ${records.length} customer sales attributed to this partner.</p>
+    const m = modal({
+      title: `Attributed Sales — ${influencer.display_name}`,
+      size: 'wide',
+      body: `
+        <div class="space-y-4">
+          <div class="flex flex-col sm:flex-row items-center justify-between gap-3 border-b border-outline pb-3">
+            <div>
+              <p class="font-mono text-xs text-on-surface-variant">Instagram: ${esc(influencer.instagram_username || '-')} | Legal Name: ${esc(influencer.legal_name)}</p>
+              <p class="text-xs text-on-surface-variant">Showing ${records.length} customer sales attributed to this partner.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" class="btn btn-secondary text-xs inline-flex items-center gap-1.5 btn-modal-pdf">
+                ${icon('picture_as_pdf', '!text-[14px]')}<span>PDF Report</span>
+              </button>
+              <button type="button" class="btn btn-secondary text-xs inline-flex items-center gap-1.5 btn-modal-xlsx">
+                ${icon('download', '!text-[14px]')}<span>Export Excel</span>
+              </button>
+              <button type="button" class="btn btn-secondary text-xs inline-flex items-center gap-1.5 btn-modal-csv">
+                <span class="font-mono text-[10px]">CSV</span>
+              </button>
+            </div>
           </div>
-          <div class="flex items-center gap-2">
-            <a href="/api/marketing/influencers/${infId}/sales/report.pdf" target="_blank" class="btn btn-secondary text-xs inline-flex items-center gap-1.5">
-              ${icon('picture_as_pdf', '!text-[14px]')}<span>PDF Report</span>
-            </a>
-            <a href="/api/marketing/influencers/${infId}/sales/export.xlsx" download class="btn btn-secondary text-xs inline-flex items-center gap-1.5">
-              ${icon('download', '!text-[14px]')}<span>Export Excel</span>
-            </a>
-          </div>
-        </div>
 
-        <div class="overflow-x-auto max-h-[60vh]">
-          <table class="w-full text-left text-xs">
-            <thead class="sticky top-0 bg-surface-dim border-b border-outline font-mono uppercase text-[10px] text-on-surface-variant">
-              <tr>
-                <th class="p-2">S.No.</th>
-                <th class="p-2">Customer</th>
-                <th class="p-2">Business</th>
-                <th class="p-2">Purchased</th>
-                <th class="p-2">Product</th>
-                <th class="p-2">Location</th>
-                <th class="p-2 text-right">Eligible Rev</th>
-                <th class="p-2 text-right">Commission</th>
-                <th class="p-2">Status</th>
-                <th class="p-2 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-outline">
-              ${records.map((r, idx) => `
+          <div class="overflow-x-auto max-h-[60vh]">
+            <table class="w-full text-left text-xs">
+              <thead class="sticky top-0 bg-surface-dim border-b border-outline font-mono uppercase text-[10px] text-on-surface-variant">
                 <tr>
-                  <td class="p-2 font-mono">${idx + 1}</td>
-                  <td class="p-2 font-semibold">${esc(r.customer_name)}</td>
-                  <td class="p-2 text-on-surface-variant">${esc(r.business_name || '-')}</td>
-                  <td class="p-2 whitespace-nowrap">${date(r.purchased_date)}</td>
-                  <td class="p-2">${esc(r.product_name)}</td>
-                  <td class="p-2 text-on-surface-variant">${esc(r.customer_location || '-')}</td>
-                  <td class="p-2 text-right font-mono">
-                    ${r.eligible_revenue_minor !== null ? money(r.eligible_revenue_minor) : '<span class="text-[10px] text-amber-700 font-mono italic">Awaiting</span>'}
-                  </td>
-                  <td class="p-2 text-right font-mono font-semibold">
-                    ${r.calculated_commission_minor !== null ? money(r.calculated_commission_minor) : '-'}
-                  </td>
-                  <td class="p-2 whitespace-nowrap">${statusBadge(r.commission_status)}</td>
-                  <td class="p-2 text-right whitespace-nowrap">
-                    <select class="sale-status-select text-[10px] py-0.5 px-1.5 border border-outline bg-surface rounded" data-id="${r.id}">
-                      <option value="PENDING" ${r.commission_status === 'PENDING' ? 'selected' : ''}>Pending</option>
-                      <option value="VERIFIED" ${r.commission_status === 'VERIFIED' ? 'selected' : ''}>Verified</option>
-                      <option value="APPROVED" ${r.commission_status === 'APPROVED' ? 'selected' : ''}>Approved</option>
-                      <option value="PAID" ${r.commission_status === 'PAID' ? 'selected' : ''}>Paid</option>
-                      <option value="DISPUTED" ${r.commission_status === 'DISPUTED' ? 'selected' : ''}>Disputed</option>
-                    </select>
-                  </td>
+                  <th class="p-2">S.No.</th>
+                  <th class="p-2">Customer</th>
+                  <th class="p-2">Business</th>
+                  <th class="p-2">Purchased</th>
+                  <th class="p-2">Product</th>
+                  <th class="p-2">Location</th>
+                  <th class="p-2 text-right">Eligible Rev</th>
+                  <th class="p-2 text-right">Commission</th>
+                  <th class="p-2">Status</th>
+                  <th class="p-2 text-right">Action</th>
                 </tr>
-              `).join('')}
-            </tbody>
-          </table>
+              </thead>
+              <tbody class="divide-y divide-outline">
+                ${records.map((r, idx) => `
+                  <tr>
+                    <td class="p-2 font-mono">${idx + 1}</td>
+                    <td class="p-2 font-semibold">${esc(r.customer_name)}</td>
+                    <td class="p-2 text-on-surface-variant">${esc(r.business_name || '-')}</td>
+                    <td class="p-2 whitespace-nowrap">${date(r.purchased_date)}</td>
+                    <td class="p-2">${esc(r.product_name)}</td>
+                    <td class="p-2 text-on-surface-variant">${esc(r.customer_location || '-')}</td>
+                    <td class="p-2 text-right font-mono">
+                      ${r.eligible_revenue_minor !== null ? money(r.eligible_revenue_minor) : '<span class="text-[10px] text-amber-700 font-mono italic">Awaiting</span>'}
+                    </td>
+                    <td class="p-2 text-right font-mono font-semibold">
+                      ${r.calculated_commission_minor !== null ? money(r.calculated_commission_minor) : '-'}
+                    </td>
+                    <td class="p-2 whitespace-nowrap">${statusBadge(r.commission_status)}</td>
+                    <td class="p-2 text-right whitespace-nowrap">
+                      <select class="sale-status-select text-[10px] py-0.5 px-1.5 border border-outline bg-surface rounded" data-id="${r.id}">
+                        <option value="VERIFIED" ${r.commission_status === 'VERIFIED' ? 'selected' : ''}>Verified</option>
+                        <option value="PENDING" ${r.commission_status === 'PENDING' ? 'selected' : ''}>Pending</option>
+                        <option value="APPROVED" ${r.commission_status === 'APPROVED' ? 'selected' : ''}>Approved</option>
+                        <option value="PAID" ${r.commission_status === 'PAID' ? 'selected' : ''}>Paid</option>
+                        <option value="REVERSED" ${r.commission_status === 'REVERSED' ? 'selected' : ''}>Reversed</option>
+                        <option value="DISPUTED" ${r.commission_status === 'DISPUTED' ? 'selected' : ''}>Disputed</option>
+                      </select>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    `,
-    footer: `
-      ${button({ label: 'Close', action: 'close-modal' })}
-    `,
-  });
+      `,
+      footer: `
+        ${button({ label: 'Close', action: 'close-modal' })}
+      `,
+    });
 
-  m.querySelectorAll('.sale-status-select').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      const saleId = sel.dataset.id;
-      const newStatus = sel.value;
+    m.querySelector('.btn-modal-pdf')?.addEventListener('click', async () => {
       try {
-        await api.post(`/api/marketing/sales/${saleId}/status`, { status: newStatus });
-        toast(`Commission status updated to ${newStatus}`);
-        if (onRefresh) onRefresh();
+        await api.openDocument(`/api/marketing/influencers/${infId}/sales/report.pdf`, { download: false });
       } catch (err) {
-        toast(err.message || 'Status update failed.', 'danger');
+        toast(err.message || 'PDF export failed.', 'danger');
       }
     });
-  });
+
+    m.querySelector('.btn-modal-xlsx')?.addEventListener('click', async () => {
+      try {
+        await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.xlsx`, { download: true });
+      } catch (err) {
+        toast(err.message || 'Excel export failed.', 'danger');
+      }
+    });
+
+    m.querySelector('.btn-modal-csv')?.addEventListener('click', async () => {
+      try {
+        await api.openDocument(`/api/marketing/influencers/${infId}/sales/export.csv`, { download: true });
+      } catch (err) {
+        toast(err.message || 'CSV export failed.', 'danger');
+      }
+    });
+
+    m.querySelectorAll('.sale-status-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const saleId = sel.dataset.id;
+        const newStatus = sel.value;
+        try {
+          await api.post(`/api/marketing/sales/${saleId}/status`, { status: newStatus });
+          toast(`Commission status updated to ${newStatus}`);
+          if (onRefresh) onRefresh();
+        } catch (err) {
+          toast(err.message || 'Status update failed.', 'danger');
+        }
+      });
+    });
+  } catch (err) {
+    toast(err.message || 'Failed to open partner sales drilldown.', 'danger');
+  }
 }
 
 /* -------------------------------------------------------------- Route Router */

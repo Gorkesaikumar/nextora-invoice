@@ -151,6 +151,16 @@ export function resolveDatePreset(presetKey, { baseDate = new Date(), customFrom
       break;
     }
 
+    case 'last_90_days': {
+      fromDate = toIsoDate(addDays(now, -89));
+      toDate = toIsoDate(now);
+      priorFrom = toIsoDate(addDays(now, -179));
+      priorTo = toIsoDate(addDays(now, -90));
+      label = 'Last 90 days';
+      priorLabel = 'Preceding 90 days';
+      break;
+    }
+
     case 'this_quarter': {
       // Indian FY quarters: Q1(4-6), Q2(7-9), Q3(10-12), Q4(1-3)
       let qNum;

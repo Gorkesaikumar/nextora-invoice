@@ -134,11 +134,18 @@ function filenameFrom(response) {
   return match ? match[1] : null;
 }
 
-export const query = params => {
+export const query = (pathOrParams, maybeParams) => {
+  let path = '';
+  let params = pathOrParams;
+  if (typeof pathOrParams === 'string') {
+    path = pathOrParams;
+    params = maybeParams || {};
+  }
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
+  for (const [key, value] of Object.entries(params || {})) {
     if (value !== '' && value !== null && value !== undefined) search.set(key, String(value));
   }
   const text = search.toString();
-  return text ? `?${text}` : '';
+  if (!text) return path;
+  return path ? `${path}?${text}` : `?${text}`;
 };

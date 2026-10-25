@@ -384,7 +384,20 @@ export async function businessOverview(db, url) {
   const priorFrom = resolved.prior.from;
   const priorTo = resolved.prior.to;
 
-  const [invoicesCurr, paymentsCurr, receivablesGlobal, overdueGlobal, cancelledCurr, topProductsCurr, topClientsCurr] = await Promise.all([
+  const [
+    invoicesCurr,
+    paymentsCurr,
+    refundsCurr,
+    receivablesGlobal,
+    overdueGlobal,
+    cancelledCurr,
+    newClientsCurr,
+    quotationsCurr,
+    unitsCurr,
+    influencerSalesCurr,
+    topProductsCurr,
+    topClientsCurr,
+  ] = await Promise.all([
     db.query(`
       SELECT
         count(*)::int AS count,
@@ -408,6 +421,15 @@ export async function businessOverview(db, url) {
         AND ($2::date IS NULL OR paid_on <= $2::date)`, [currentFrom, currentTo]),
 
     db.query(`
+      SELECT
+        count(*)::int AS count,
+        COALESCE(sum((totals->>'grand_total_minor')::bigint), 0)::bigint AS refunds_minor
+      FROM inv.adjustment_notes
+      WHERE kind = 'CREDIT'
+        AND ($1::date IS NULL OR issue_date >= $1::date)
+        AND ($2::date IS NULL OR issue_date <= $2::date)`, [currentFrom, currentTo]),
+
+    db.query(`
       SELECT COALESCE(sum(${BALANCE}),0)::bigint AS total, count(*)::int AS count
       FROM inv.invoices i
       LEFT JOIN (SELECT invoice_id, sum(amount_minor) AS paid_minor FROM inv.payments GROUP BY invoice_id) p
@@ -422,11 +444,46 @@ export async function businessOverview(db, url) {
       WHERE i.status='ISSUED' AND ${BALANCE} > 0 AND i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE`),
 
     db.query(`
-      SELECT count(*)::int AS count
+      SELECT
+        count(*)::int AS count,
+        COALESCE(sum((totals->>'grand_total_minor')::bigint), 0)::bigint AS cancelled_minor
       FROM inv.invoices
       WHERE status IN ('CANCELLED', 'VOID')
         AND ($1::date IS NULL OR issue_date >= $1::date)
         AND ($2::date IS NULL OR issue_date <= $2::date)`, [currentFrom, currentTo]),
+
+    db.query(`
+      SELECT count(*)::int AS count
+      FROM inv.clients
+      WHERE ($1::date IS NULL OR created_at >= $1::date)
+        AND ($2::date IS NULL OR created_at <= $2::date)`, [currentFrom, currentTo]),
+
+    db.query(`
+      SELECT
+        count(*)::int AS issued_count,
+        count(CASE WHEN converted_invoice_id IS NOT NULL THEN 1 END)::int AS converted_count
+      FROM inv.quotations
+      WHERE ($1::date IS NULL OR issue_date >= $1::date)
+        AND ($2::date IS NULL OR issue_date <= $2::date)`, [currentFrom, currentTo]),
+
+    db.query(`
+      SELECT COALESCE(sum(items.quantity_milli), 0)::bigint AS units_milli
+      FROM inv.invoice_items items
+      JOIN inv.invoices i ON i.id = items.invoice_id
+      WHERE i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date)
+        AND ($2::date IS NULL OR i.issue_date <= $2::date)`, [currentFrom, currentTo]),
+
+    db.query(`
+      SELECT
+        count(*)::int AS count,
+        COALESCE(sum(r.sale_amount_minor), 0)::bigint AS attributed_sales_minor,
+        COALESCE(sum(CASE WHEN r.is_revenue_verified THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_earned_minor,
+        COALESCE(sum(CASE WHEN r.commission_status = 'PAID' THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_paid_minor,
+        COALESCE(sum(CASE WHEN r.commission_status IN ('VERIFIED', 'PENDING', 'APPROVED') THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_payable_minor
+      FROM inv.influencer_sales_records r
+      WHERE ($1::date IS NULL OR r.purchased_date >= $1::date)
+        AND ($2::date IS NULL OR r.purchased_date <= $2::date)`, [currentFrom, currentTo]),
 
     db.query(`
       SELECT COALESCE(p.name, NULLIF(items.description,''), 'Unnamed item') AS description,
@@ -450,11 +507,17 @@ export async function businessOverview(db, url) {
       ORDER BY invoiced_minor DESC LIMIT 5`, [currentFrom, currentTo]),
   ]);
 
-  let priorInv = { count: 0, invoiced_minor: 0, taxable_minor: 0, cgst_minor: 0, sgst_minor: 0, igst_minor: 0 };
+  let priorInv = { count: 0, invoiced_minor: 0, taxable_minor: 0, cgst_minor: 0, sgst_minor: 0, igst_minor: 0, active_clients: 0 };
   let priorPay = { count: 0, collected_minor: 0 };
+  let priorRef = { count: 0, refunds_minor: 0 };
+  let priorCanc = { count: 0, cancelled_minor: 0 };
+  let priorNewClients = { count: 0 };
+  let priorQuotations = { issued_count: 0, converted_count: 0 };
+  let priorUnits = { units_milli: 0 };
+  let priorInfSales = { count: 0, attributed_sales_minor: 0, commission_earned_minor: 0, commission_paid_minor: 0, commission_payable_minor: 0 };
 
   if (priorFrom && priorTo) {
-    const [pInv, pPay] = await Promise.all([
+    const [pInv, pPay, pRef, pCanc, pNC, pQ, pU, pInf] = await Promise.all([
       db.query(`
         SELECT
           count(*)::int AS count,
@@ -462,38 +525,99 @@ export async function businessOverview(db, url) {
           COALESCE(sum((totals->>'taxable_total_minor')::bigint), 0)::bigint AS taxable_minor,
           COALESCE(sum((totals->>'cgst_total_minor')::bigint), 0)::bigint AS cgst_minor,
           COALESCE(sum((totals->>'sgst_total_minor')::bigint), 0)::bigint AS sgst_minor,
-          COALESCE(sum((totals->>'igst_total_minor')::bigint), 0)::bigint AS igst_minor
+          COALESCE(sum((totals->>'igst_total_minor')::bigint), 0)::bigint AS igst_minor,
+          count(DISTINCT client_id)::int AS active_clients
         FROM inv.invoices
         WHERE status = 'ISSUED'
           AND issue_date >= $1::date AND issue_date <= $2::date`, [priorFrom, priorTo]),
+
       db.query(`
         SELECT
           count(*)::int AS count,
           COALESCE(sum(amount_minor), 0)::bigint AS collected_minor
         FROM inv.payments
         WHERE paid_on >= $1::date AND paid_on <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT
+          count(*)::int AS count,
+          COALESCE(sum((totals->>'grand_total_minor')::bigint), 0)::bigint AS refunds_minor
+        FROM inv.adjustment_notes
+        WHERE kind = 'CREDIT'
+          AND issue_date >= $1::date AND issue_date <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT
+          count(*)::int AS count,
+          COALESCE(sum((totals->>'grand_total_minor')::bigint), 0)::bigint AS cancelled_minor
+        FROM inv.invoices
+        WHERE status IN ('CANCELLED', 'VOID')
+          AND issue_date >= $1::date AND issue_date <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT count(*)::int AS count
+        FROM inv.clients
+        WHERE created_at >= $1::date AND created_at <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT
+          count(*)::int AS issued_count,
+          count(CASE WHEN converted_invoice_id IS NOT NULL THEN 1 END)::int AS converted_count
+        FROM inv.quotations
+        WHERE issue_date >= $1::date AND issue_date <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT COALESCE(sum(items.quantity_milli), 0)::bigint AS units_milli
+        FROM inv.invoice_items items
+        JOIN inv.invoices i ON i.id = items.invoice_id
+        WHERE i.status = 'ISSUED'
+          AND i.issue_date >= $1::date AND i.issue_date <= $2::date`, [priorFrom, priorTo]),
+
+      db.query(`
+        SELECT
+          count(*)::int AS count,
+          COALESCE(sum(r.sale_amount_minor), 0)::bigint AS attributed_sales_minor,
+          COALESCE(sum(CASE WHEN r.is_revenue_verified THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_earned_minor,
+          COALESCE(sum(CASE WHEN r.commission_status = 'PAID' THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_paid_minor,
+          COALESCE(sum(CASE WHEN r.commission_status IN ('VERIFIED', 'PENDING', 'APPROVED') THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_payable_minor
+        FROM inv.influencer_sales_records r
+        WHERE r.purchased_date >= $1::date AND r.purchased_date <= $2::date`, [priorFrom, priorTo]),
     ]);
+
     priorInv = pInv.rows[0];
     priorPay = pPay.rows[0];
+    priorRef = pRef.rows[0];
+    priorCanc = pCanc.rows[0];
+    priorNewClients = pNC.rows[0];
+    priorQuotations = pQ.rows[0];
+    priorUnits = pU.rows[0];
+    priorInfSales = pInf.rows[0];
   }
 
   const currInv = invoicesCurr.rows[0];
   const currPay = paymentsCurr.rows[0];
+  const currRef = refundsCurr.rows[0];
+  const currCanc = cancelledCurr.rows[0];
+  const currNewClients = newClientsCurr.rows[0];
+  const currQuotations = quotationsCurr.rows[0];
+  const currUnits = unitsCurr.rows[0];
+  const currInfSales = influencerSalesCurr.rows[0];
+
   const currTaxMinor = Number(currInv.cgst_minor || 0) + Number(currInv.sgst_minor || 0) + Number(currInv.igst_minor || 0);
   const priorTaxMinor = Number(priorInv.cgst_minor || 0) + Number(priorInv.sgst_minor || 0) + Number(priorInv.igst_minor || 0);
+
+  const currNetInvoicedMinor = Math.max(0, Number(currInv.invoiced_minor || 0) - Number(currRef.refunds_minor || 0) - Number(currCanc.cancelled_minor || 0));
+  const priorNetInvoicedMinor = Math.max(0, Number(priorInv.invoiced_minor || 0) - Number(priorRef.refunds_minor || 0) - Number(priorCanc.cancelled_minor || 0));
 
   return {
     range: resolved,
     metrics: {
       invoiced: compareMetrics(currInv.invoiced_minor, priorInv.invoiced_minor),
+      net_invoiced: compareMetrics(currNetInvoicedMinor, priorNetInvoicedMinor),
       invoices_count: compareMetrics(currInv.count, priorInv.count),
       collected: compareMetrics(currPay.collected_minor, priorPay.collected_minor),
       receipts_count: compareMetrics(currPay.count, priorPay.count),
-      taxable: compareMetrics(currInv.taxable_minor, priorInv.taxable_minor),
-      tax: compareMetrics(currTaxMinor, priorTaxMinor),
-      cgst: compareMetrics(currInv.cgst_minor, priorInv.cgst_minor),
-      sgst: compareMetrics(currInv.sgst_minor, priorInv.sgst_minor),
-      igst: compareMetrics(currInv.igst_minor, priorInv.igst_minor),
+      refunds: compareMetrics(currRef.refunds_minor, priorRef.refunds_minor),
       receivables: {
         total_minor: receivablesGlobal.rows[0].total,
         count: receivablesGlobal.rows[0].count,
@@ -502,8 +626,22 @@ export async function businessOverview(db, url) {
         total_minor: overdueGlobal.rows[0].total,
         count: overdueGlobal.rows[0].count,
       },
-      cancelled_count: cancelledCurr.rows[0].count,
+      taxable: compareMetrics(currInv.taxable_minor, priorInv.taxable_minor),
+      tax: compareMetrics(currTaxMinor, priorTaxMinor),
+      cgst: compareMetrics(currInv.cgst_minor, priorInv.cgst_minor),
+      sgst: compareMetrics(currInv.sgst_minor, priorInv.sgst_minor),
+      igst: compareMetrics(currInv.igst_minor, priorInv.igst_minor),
       active_clients: currInv.active_clients,
+      active_clients_growth: compareMetrics(currInv.active_clients, priorInv.active_clients),
+      new_clients: compareMetrics(currNewClients.count, priorNewClients.count),
+      quotations_issued: compareMetrics(currQuotations.issued_count, priorQuotations.issued_count),
+      quotations_converted: compareMetrics(currQuotations.converted_count, priorQuotations.converted_count),
+      units_sold: compareMetrics(Math.round(Number(currUnits.units_milli || 0) / 1000), Math.round(Number(priorUnits.units_milli || 0) / 1000)),
+      influencer_attributed_sales: compareMetrics(currInfSales.attributed_sales_minor, priorInfSales.attributed_sales_minor),
+      influencer_commission_earned: compareMetrics(currInfSales.commission_earned_minor, priorInfSales.commission_earned_minor),
+      influencer_commission_paid: compareMetrics(currInfSales.commission_paid_minor, priorInfSales.commission_paid_minor),
+      influencer_commission_payable: compareMetrics(currInfSales.commission_payable_minor, priorInfSales.commission_payable_minor),
+      cancelled_count: currCanc.count,
     },
     top_products: topProductsCurr.rows,
     top_clients: topClientsCurr.rows,
@@ -603,6 +741,477 @@ export async function customerStatement(db, clientId, url) {
     total_debits_minor: totalDebits,
     total_credits_minor: totalCredits,
     closing_balance_minor: running,
+  };
+}
+
+/* ------------------------------------------------------------- Monthly Company Revenue */
+
+export async function monthlyCompanyRevenue(db, url) {
+  const { from, to } = range(url);
+
+  const [invoicesByMonth, paymentsByMonth, refundsByMonth, influencerByMonth] = await Promise.all([
+    db.query(`
+      SELECT
+        to_char(date_trunc('month', i.issue_date), 'YYYY-MM') AS month,
+        count(i.id)::int AS invoices_count,
+        COALESCE(sum((i.totals->>'gross_total_minor')::bigint), 0)::bigint AS gross_invoiced_minor,
+        COALESCE(sum((i.totals->>'item_discount_total_minor')::bigint + (i.totals->>'invoice_discount_total_minor')::bigint), 0)::bigint AS discount_minor,
+        COALESCE(sum((i.totals->>'taxable_total_minor')::bigint), 0)::bigint AS taxable_minor,
+        COALESCE(sum((i.totals->>'cgst_total_minor')::bigint), 0)::bigint AS cgst_minor,
+        COALESCE(sum((i.totals->>'sgst_total_minor')::bigint), 0)::bigint AS sgst_minor,
+        COALESCE(sum((i.totals->>'igst_total_minor')::bigint), 0)::bigint AS igst_minor,
+        COALESCE(sum((i.totals->>'grand_total_minor')::bigint), 0)::bigint AS invoiced_minor
+      FROM inv.invoices i
+      WHERE i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date)
+        AND ($2::date IS NULL OR i.issue_date <= $2::date)
+      GROUP BY 1
+      ORDER BY 1 DESC`, [from, to]),
+
+    db.query(`
+      SELECT
+        to_char(date_trunc('month', p.paid_on), 'YYYY-MM') AS month,
+        COALESCE(sum(p.amount_minor), 0)::bigint AS collected_minor
+      FROM inv.payments p
+      WHERE ($1::date IS NULL OR p.paid_on >= $1::date)
+        AND ($2::date IS NULL OR p.paid_on <= $2::date)
+      GROUP BY 1`, [from, to]),
+
+    db.query(`
+      SELECT
+        to_char(date_trunc('month', n.issue_date), 'YYYY-MM') AS month,
+        COALESCE(sum((n.totals->>'grand_total_minor')::bigint), 0)::bigint AS refunds_minor
+      FROM inv.adjustment_notes n
+      WHERE n.kind = 'CREDIT'
+        AND ($1::date IS NULL OR n.issue_date >= $1::date)
+        AND ($2::date IS NULL OR n.issue_date <= $2::date)
+      GROUP BY 1`, [from, to]),
+
+    db.query(`
+      SELECT
+        to_char(date_trunc('month', r.purchased_date), 'YYYY-MM') AS month,
+        COALESCE(sum(r.sale_amount_minor), 0)::bigint AS influencer_sales_minor,
+        COALESCE(sum(CASE WHEN r.is_revenue_verified THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_earned_minor,
+        COALESCE(sum(CASE WHEN r.commission_status = 'PAID' THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_paid_minor,
+        COALESCE(sum(CASE WHEN r.commission_status IN ('VERIFIED', 'PENDING', 'APPROVED') THEN r.calculated_commission_minor ELSE 0 END), 0)::bigint AS commission_payable_minor
+      FROM inv.influencer_sales_records r
+      WHERE ($1::date IS NULL OR r.purchased_date >= $1::date)
+        AND ($2::date IS NULL OR r.purchased_date <= $2::date)
+      GROUP BY 1`, [from, to]),
+  ]);
+
+  const monthMap = new Map();
+
+  function getMonth(m) {
+    if (!monthMap.has(m)) {
+      monthMap.set(m, {
+        month: m,
+        invoices_count: 0,
+        gross_invoiced_minor: 0,
+        discount_minor: 0,
+        taxable_minor: 0,
+        cgst_minor: 0,
+        sgst_minor: 0,
+        igst_minor: 0,
+        invoiced_minor: 0,
+        collected_minor: 0,
+        refunds_minor: 0,
+        net_collected_minor: 0,
+        balance_minor: 0,
+        influencer_sales_minor: 0,
+        commission_earned_minor: 0,
+        commission_paid_minor: 0,
+        commission_payable_minor: 0,
+        mom_growth_pct: null,
+      });
+    }
+    return monthMap.get(m);
+  }
+
+  for (const r of invoicesByMonth.rows) {
+    if (!r.month) continue;
+    const item = getMonth(r.month);
+    item.invoices_count = Number(r.invoices_count || 0);
+    item.gross_invoiced_minor = Number(r.gross_invoiced_minor || 0);
+    item.discount_minor = Number(r.discount_minor || 0);
+    item.taxable_minor = Number(r.taxable_minor || 0);
+    item.cgst_minor = Number(r.cgst_minor || 0);
+    item.sgst_minor = Number(r.sgst_minor || 0);
+    item.igst_minor = Number(r.igst_minor || 0);
+    item.invoiced_minor = Number(r.invoiced_minor || 0);
+  }
+
+  for (const r of paymentsByMonth.rows) {
+    if (!r.month) continue;
+    const item = getMonth(r.month);
+    item.collected_minor = Number(r.collected_minor || 0);
+  }
+
+  for (const r of refundsByMonth.rows) {
+    if (!r.month) continue;
+    const item = getMonth(r.month);
+    item.refunds_minor = Number(r.refunds_minor || 0);
+  }
+
+  for (const r of influencerByMonth.rows) {
+    if (!r.month) continue;
+    const item = getMonth(r.month);
+    item.influencer_sales_minor = Number(r.influencer_sales_minor || 0);
+    item.commission_earned_minor = Number(r.commission_earned_minor || 0);
+    item.commission_paid_minor = Number(r.commission_paid_minor || 0);
+    item.commission_payable_minor = Number(r.commission_payable_minor || 0);
+  }
+
+  const sortedAsc = Array.from(monthMap.values()).sort((a, b) => a.month.localeCompare(b.month));
+  for (let i = 0; i < sortedAsc.length; i += 1) {
+    const cur = sortedAsc[i];
+    cur.month_label = cur.month;
+    cur.net_invoiced_minor = Math.max(0, cur.invoiced_minor - cur.refunds_minor);
+    cur.net_collected_minor = Math.max(0, cur.collected_minor - cur.refunds_minor);
+    cur.balance_minor = Math.max(0, cur.invoiced_minor - cur.collected_minor);
+    cur.receivables_minor = cur.balance_minor;
+    if (i > 0) {
+      const prev = sortedAsc[i - 1];
+      if (prev.invoiced_minor > 0) {
+        cur.mom_growth_pct = Math.round(((cur.invoiced_minor - prev.invoiced_minor) / prev.invoiced_minor) * 1000) / 10;
+      } else if (cur.invoiced_minor > 0) {
+        cur.mom_growth_pct = 100;
+      } else {
+        cur.mom_growth_pct = 0;
+      }
+    } else {
+      cur.mom_growth_pct = null;
+    }
+    cur.growth_pct = cur.mom_growth_pct;
+  }
+
+  const rows = sortedAsc.reverse();
+
+  const totals = {
+    invoices_count: sumBy(rows, 'invoices_count'),
+    gross_invoiced_minor: sumBy(rows, 'gross_invoiced_minor'),
+    discount_minor: sumBy(rows, 'discount_minor'),
+    taxable_minor: sumBy(rows, 'taxable_minor'),
+    cgst_minor: sumBy(rows, 'cgst_minor'),
+    sgst_minor: sumBy(rows, 'sgst_minor'),
+    igst_minor: sumBy(rows, 'igst_minor'),
+    invoiced_minor: sumBy(rows, 'invoiced_minor'),
+    net_invoiced_minor: sumBy(rows, 'net_invoiced_minor'),
+    collected_minor: sumBy(rows, 'collected_minor'),
+    refunds_minor: sumBy(rows, 'refunds_minor'),
+    net_collected_minor: sumBy(rows, 'net_collected_minor'),
+    balance_minor: sumBy(rows, 'balance_minor'),
+    receivables_minor: sumBy(rows, 'balance_minor'),
+    influencer_sales_minor: sumBy(rows, 'influencer_sales_minor'),
+    commission_earned_minor: sumBy(rows, 'commission_earned_minor'),
+    commission_paid_minor: sumBy(rows, 'commission_paid_minor'),
+    commission_payable_minor: sumBy(rows, 'commission_payable_minor'),
+  };
+
+  return { rows, totals, count: rows.length };
+}
+
+/* ------------------------------------------------------------- Client Register */
+
+export async function clientRegister(db, url) {
+  const { from, to } = range(url);
+  const search = (url.searchParams.get('search') || '').trim();
+  const searchPattern = search ? `%${escapeLike(search)}%` : '';
+
+  const rows = (await db.query(`
+    SELECT
+      c.id, c.name AS client_name, c.company_name, c.email, c.phone, c.billing_address, c.state_code, c.gstin, c.status,
+      COALESCE((SELECT count(*)::int FROM inv.quotations q WHERE q.client_id = c.id
+        AND ($1::date IS NULL OR q.issue_date >= $1::date) AND ($2::date IS NULL OR q.issue_date <= $2::date)), 0)::int AS quotation_count,
+      COALESCE((SELECT count(*)::int FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::int AS invoice_count,
+      COALESCE((SELECT sum((i.totals->>'gross_total_minor')::bigint) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::bigint AS gross_invoiced_minor,
+      COALESCE((SELECT sum((i.totals->>'item_discount_total_minor')::bigint + (i.totals->>'invoice_discount_total_minor')::bigint) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::bigint AS discount_minor,
+      COALESCE((SELECT sum((i.totals->>'taxable_total_minor')::bigint) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::bigint AS taxable_minor,
+      COALESCE((SELECT sum((i.totals->>'tax_total_minor')::bigint) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::bigint AS gst_minor,
+      COALESCE((SELECT sum((i.totals->>'grand_total_minor')::bigint) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'
+        AND ($1::date IS NULL OR i.issue_date >= $1::date) AND ($2::date IS NULL OR i.issue_date <= $2::date)), 0)::bigint AS invoiced_minor,
+      COALESCE((SELECT sum(p.amount_minor)::bigint FROM inv.payments p JOIN inv.invoices i2 ON i2.id = p.invoice_id WHERE i2.client_id = c.id
+        AND ($1::date IS NULL OR p.paid_on >= $1::date) AND ($2::date IS NULL OR p.paid_on <= $2::date)), 0)::bigint AS collected_minor,
+      COALESCE((SELECT sum((n.totals->>'grand_total_minor')::bigint) FROM inv.adjustment_notes n WHERE n.client_id = c.id AND n.kind = 'CREDIT'
+        AND ($1::date IS NULL OR n.issue_date >= $1::date) AND ($2::date IS NULL OR n.issue_date <= $2::date)), 0)::bigint AS refunds_minor,
+      COALESCE((SELECT sum(((i3.totals->>'grand_total_minor')::bigint - COALESCE(p3.paid_minor,0))::bigint) FROM inv.invoices i3
+        LEFT JOIN (SELECT invoice_id, sum(amount_minor) AS paid_minor FROM inv.payments GROUP BY invoice_id) p3 ON p3.invoice_id = i3.id
+        WHERE i3.client_id = c.id AND i3.status = 'ISSUED' AND ((i3.totals->>'grand_total_minor')::bigint - COALESCE(p3.paid_minor,0))::bigint > 0
+          AND i3.due_date IS NOT NULL AND i3.due_date < CURRENT_DATE), 0)::bigint AS overdue_minor,
+      COALESCE((SELECT min(i.issue_date) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'), NULL) AS first_invoice_date,
+      COALESCE((SELECT max(i.issue_date) FROM inv.invoices i WHERE i.client_id = c.id AND i.status = 'ISSUED'), NULL) AS last_invoice_date,
+      COALESCE((SELECT max(p.paid_on) FROM inv.payments p JOIN inv.invoices i2 ON i2.id = p.invoice_id WHERE i2.client_id = c.id), NULL) AS last_payment_date
+    FROM inv.clients c
+    WHERE ($3 = '' OR c.name ILIKE $3 ESCAPE '!' OR c.company_name ILIKE $3 ESCAPE '!' OR c.email ILIKE $3 ESCAPE '!' OR c.gstin ILIKE $3 ESCAPE '!')
+    ORDER BY c.name ASC`, [from, to, searchPattern])).rows;
+
+  const enriched = rows.map(r => ({
+    ...r,
+    balance_minor: Math.max(0, Number(r.invoiced_minor || 0) - Number(r.collected_minor || 0)),
+  }));
+
+  const total_invoiced_minor = sumBy(enriched, 'invoiced_minor');
+  const total_collected_minor = sumBy(enriched, 'collected_minor');
+  const total_balance_minor = sumBy(enriched, 'balance_minor');
+  const total_overdue_minor = sumBy(enriched, 'overdue_minor');
+
+  const totals = {
+    quotation_count: sumBy(enriched, 'quotation_count'),
+    invoice_count: sumBy(enriched, 'invoice_count'),
+    gross_invoiced_minor: sumBy(enriched, 'gross_invoiced_minor'),
+    discount_minor: sumBy(enriched, 'discount_minor'),
+    taxable_minor: sumBy(enriched, 'taxable_minor'),
+    tax_minor: sumBy(enriched, 'tax_minor'),
+    invoiced_minor: total_invoiced_minor,
+    collected_minor: total_collected_minor,
+    refunds_minor: sumBy(enriched, 'refunds_minor'),
+    balance_minor: total_balance_minor,
+    overdue_minor: total_overdue_minor,
+  };
+
+  return {
+    rows: enriched,
+    totals,
+    total_invoiced_minor,
+    total_collected_minor,
+    total_balance_minor,
+    total_overdue_minor,
+    count: enriched.length,
+  };
+}
+
+/* ------------------------------------------------------------- Quotation Register */
+
+export async function quotationRegister(db, url) {
+  const { from, to } = range(url);
+  const status = (url.searchParams.get('status') || '').toUpperCase();
+  const client = (url.searchParams.get('client_id') || '').trim() || null;
+
+  const rows = (await db.query(`
+    SELECT q.id, q.quotation_number, q.status, q.title, q.issue_date, q.expiry_date, c.name AS client_name, c.id AS client_id,
+      (q.totals->>'taxable_total_minor')::bigint AS taxable_minor,
+      (q.totals->>'tax_total_minor')::bigint AS tax_minor,
+      (q.totals->>'grand_total_minor')::bigint AS grand_total_minor,
+      q.converted_invoice_id,
+      i.invoice_number AS converted_invoice_number,
+      q.converted_invoice_id IS NOT NULL AS converted,
+      CASE WHEN q.status='SENT' AND q.expiry_date IS NOT NULL AND q.expiry_date < CURRENT_DATE THEN 'EXPIRED' ELSE q.status END AS effective_status
+    FROM inv.quotations q
+    JOIN inv.clients c ON c.id=q.client_id
+    LEFT JOIN inv.invoices i ON i.id = q.converted_invoice_id
+    WHERE ($1::date IS NULL OR q.issue_date >= $1::date) AND ($2::date IS NULL OR q.issue_date <= $2::date)
+      AND ($3='' OR q.status=$3) AND ($4::uuid IS NULL OR q.client_id=$4::uuid)
+    ORDER BY q.issue_date DESC, q.created_at DESC`, [from, to, status, client])).rows.map(row => ({
+    ...row,
+    converted: Boolean(row.converted),
+  }));
+
+  const accepted = rows.filter(row => row.status === 'ACCEPTED').length;
+  const rejected = rows.filter(row => row.status === 'REJECTED').length;
+  const converted = rows.filter(row => row.converted).length;
+  const decided = accepted + rejected;
+
+  return {
+    rows,
+    accepted,
+    rejected,
+    converted,
+    conversion_rate_bp: decided ? Math.round((accepted / decided) * 10000) : 0,
+    total_value_minor: sumBy(rows, 'grand_total_minor'),
+    taxable_minor: sumBy(rows, 'taxable_minor'),
+    tax_minor: sumBy(rows, 'tax_minor'),
+    count: rows.length,
+  };
+}
+
+/* ------------------------------------------------------------- Influencer Register Report */
+
+export async function influencerRegisterReport(db, url) {
+  const { from, to } = range(url);
+
+  const rows = (await db.query(`
+    SELECT
+      inf.id,
+      inf.legal_name,
+      inf.display_name,
+      inf.instagram_username,
+      inf.email,
+      inf.phone,
+      inf.status,
+      agr.contract_number,
+      agr.commission_basis_points,
+      agr.commission_basis,
+      agr.status AS agreement_status,
+      agr.start_date AS agreement_start_date,
+      agr.end_date AS agreement_end_date,
+      agr.is_indefinite,
+      COALESCE((SELECT count(*)::int FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::int AS total_sales,
+      COALESCE((SELECT sum(r.sale_amount_minor)::bigint FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::bigint AS gross_sales_minor,
+      COALESCE((SELECT sum(CASE WHEN r.is_revenue_verified THEN r.eligible_revenue_minor ELSE 0 END)::bigint FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::bigint AS verified_revenue_minor,
+      COALESCE((SELECT sum(CASE WHEN r.is_revenue_verified THEN r.calculated_commission_minor ELSE 0 END)::bigint FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::bigint AS calculated_commission_minor,
+      COALESCE((SELECT sum(CASE WHEN r.commission_status = 'PAID' THEN r.calculated_commission_minor ELSE 0 END)::bigint FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::bigint AS paid_commission_minor,
+      COALESCE((SELECT sum(CASE WHEN r.commission_status IN ('VERIFIED', 'PENDING', 'APPROVED') THEN r.calculated_commission_minor ELSE 0 END)::bigint FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id
+        AND ($1::date IS NULL OR r.purchased_date >= $1::date) AND ($2::date IS NULL OR r.purchased_date <= $2::date)), 0)::bigint AS pending_commission_minor,
+      COALESCE((SELECT max(r.purchased_date) FROM inv.influencer_sales_records r WHERE r.influencer_id = inf.id), NULL) AS last_sale_date
+    FROM inv.influencers inf
+    LEFT JOIN inv.influencer_agreements agr ON agr.influencer_id = inf.id AND agr.status IN ('ACTIVE', 'SIGNED', 'ACCEPTED')
+    ORDER BY inf.legal_name ASC`, [from, to])).rows;
+
+  const total_sales_count = sumBy(rows, 'total_sales');
+  const total_gross_minor = sumBy(rows, 'gross_sales_minor');
+  const total_verified_minor = sumBy(rows, 'verified_revenue_minor');
+  const total_commission_minor = sumBy(rows, 'calculated_commission_minor');
+  const total_paid_minor = sumBy(rows, 'paid_commission_minor');
+  const total_pending_minor = sumBy(rows, 'pending_commission_minor');
+
+  const totals = {
+    sales_count: total_sales_count,
+    attributed_sales_minor: total_gross_minor,
+    eligible_revenue_minor: total_verified_minor,
+    commission_earned_minor: total_commission_minor,
+    commission_paid_minor: total_paid_minor,
+    commission_payable_minor: total_pending_minor,
+  };
+
+  return {
+    rows,
+    totals,
+    total_sales_count,
+    total_gross_minor,
+    total_verified_minor,
+    total_commission_minor,
+    total_paid_minor,
+    total_pending_minor,
+    count: rows.length,
+  };
+}
+
+/* ------------------------------------------------------------- Influencer Sales Detail Report */
+
+export async function influencerSalesDetailReport(db, url) {
+  const { from, to } = range(url);
+  const influencerId = (url.searchParams.get('influencer_id') || '').trim() || null;
+  const productName = (url.searchParams.get('product_name') || '').trim();
+  const status = (url.searchParams.get('status') || '').trim().toUpperCase();
+
+  const rows = (await db.query(`
+    SELECT
+      r.id,
+      r.serial_number,
+      r.batch_id,
+      b.filename AS batch_number,
+      r.customer_name,
+      r.business_name,
+      r.purchased_date,
+      r.product_name,
+      inf.id AS influencer_id,
+      inf.legal_name AS influencer_name,
+      inf.instagram_username,
+      r.order_reference,
+      r.sale_amount_minor,
+      r.discount_amount_minor,
+      r.gst_rate_bp,
+      r.gst_amount_minor,
+      r.refund_amount_minor,
+      r.eligible_revenue_minor,
+      r.commission_basis,
+      r.commission_rate_bp,
+      r.calculated_commission_minor,
+      r.commission_status,
+      r.is_revenue_verified
+    FROM inv.influencer_sales_records r
+    LEFT JOIN inv.influencer_sales_batches b ON b.id = r.batch_id
+    LEFT JOIN inv.influencers inf ON inf.id = r.influencer_id
+    WHERE ($1::date IS NULL OR r.purchased_date >= $1::date)
+      AND ($2::date IS NULL OR r.purchased_date <= $2::date)
+      AND ($3::uuid IS NULL OR r.influencer_id = $3::uuid)
+      AND ($4 = '' OR r.product_name = $4)
+      AND ($5 = '' OR r.commission_status = $5)
+    ORDER BY r.purchased_date DESC, r.serial_number ASC`, [from, to, influencerId, productName, status])).rows;
+
+  const total_sales_minor = sumBy(rows, 'sale_amount_minor');
+  const total_discount_minor = sumBy(rows, 'discount_amount_minor');
+  const total_gst_minor = sumBy(rows, 'gst_amount_minor');
+  const total_eligible_minor = sumBy(rows, 'eligible_revenue_minor');
+  const total_commission_minor = sumBy(rows, 'calculated_commission_minor');
+
+  const totals = {
+    sale_amount_minor: total_sales_minor,
+    discount_amount_minor: total_discount_minor,
+    gst_amount_minor: total_gst_minor,
+    eligible_revenue_minor: total_eligible_minor,
+    commission_minor: total_commission_minor,
+  };
+
+  return {
+    rows,
+    totals,
+    total_sales_minor,
+    total_discount_minor,
+    total_gst_minor,
+    total_eligible_minor,
+    total_commission_minor,
+    count: rows.length,
+  };
+}
+
+/* ------------------------------------------------------------- Import Batches Report */
+
+export async function importBatchesReport(db, url) {
+  const { from, to } = range(url);
+
+  const batches = (await db.query(`
+    SELECT
+      b.id,
+      b.filename,
+      b.file_sha256,
+      b.row_count,
+      b.valid_row_count,
+      b.invalid_row_count,
+      b.duplicate_row_count,
+      b.status,
+      b.notes,
+      b.imported_at,
+      u.display_name AS actor_name,
+      u.email AS actor_email,
+      COALESCE((SELECT sum(sale_amount_minor) FROM inv.influencer_sales_records r WHERE r.batch_id = b.id), 0)::bigint AS total_sales_minor,
+      COALESCE((SELECT sum(calculated_commission_minor) FROM inv.influencer_sales_records r WHERE r.batch_id = b.id), 0)::bigint AS total_commission_minor
+    FROM inv.influencer_sales_batches b
+    LEFT JOIN inv.users u ON u.id = b.imported_by
+    WHERE ($1::date IS NULL OR b.imported_at >= $1::date)
+      AND ($2::date IS NULL OR b.imported_at <= $2::date)
+    ORDER BY b.imported_at DESC`, [from, to])).rows;
+
+  const total_records = sumBy(batches, 'valid_row_count');
+  const total_sales_minor = sumBy(batches, 'total_sales_minor');
+  const total_commission_minor = sumBy(batches, 'total_commission_minor');
+
+  const totals = {
+    row_count: sumBy(batches, 'row_count'),
+    valid_count: total_records,
+    error_count: sumBy(batches, 'invalid_row_count'),
+    total_sales_minor,
+    total_commission_minor,
+  };
+
+  return {
+    batches,
+    rows: batches,
+    totals,
+    total_records,
+    total_sales_minor,
+    total_commission_minor,
+    count: batches.length,
   };
 }
 

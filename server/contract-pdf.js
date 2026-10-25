@@ -84,8 +84,29 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   const allowCompany = mode === 'BOTH' || mode === 'COMPANY_ONLY';
   const allowProduct = mode === 'BOTH' || mode === 'PRODUCT_ONLY';
 
-  const companyLogoImg = allowCompany ? await embedImage(doc, companyLogo) : null;
-  const productLogoImg = allowProduct ? await embedImage(doc, productLogo) : null;
+  // Authoritative Logo Resolution: parameter or preserved snapshot data URI
+  let effectiveCompanyLogo = companyLogo;
+  if (!effectiveCompanyLogo && snapshot.company_logo?.data_uri) {
+    try {
+      const raw = String(snapshot.company_logo.data_uri).split(',')[1];
+      if (raw) {
+        effectiveCompanyLogo = { bytes: Buffer.from(raw, 'base64'), mimeType: snapshot.company_logo.mime_type || 'image/png' };
+      }
+    } catch {}
+  }
+
+  let effectiveProductLogo = productLogo;
+  if (!effectiveProductLogo && snapshot.product_logo?.data_uri) {
+    try {
+      const raw = String(snapshot.product_logo.data_uri).split(',')[1];
+      if (raw) {
+        effectiveProductLogo = { bytes: Buffer.from(raw, 'base64'), mimeType: snapshot.product_logo.mime_type || 'image/png' };
+      }
+    } catch {}
+  }
+
+  const companyLogoImg = allowCompany ? await embedImage(doc, effectiveCompanyLogo) : null;
+  const productLogoImg = allowProduct ? await embedImage(doc, effectiveProductLogo) : null;
 
   const accent = hexToRgb(snapshot.business?.pdf_accent_color);
   const pages = [];
@@ -157,15 +178,14 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     y -= 28;
   }
 
-  // --- Start Page 1 ---
+  // ==================== PAGE 1 ====================
   addPage();
 
-  // Primary Header
   const headerTop = y;
   let leftHeaderBottom = headerTop;
   let rightHeaderBottom = headerTop;
 
-  // Company Logo or Text
+  // Company Logo or Text Fallback
   if (companyLogoImg) {
     const scaled = companyLogoImg.scaleToFit(140, 48);
     page.drawImage(companyLogoImg, {
@@ -202,7 +222,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     bTop = drawText(`PAN: ${snapshot.business.pan}`, MARGIN, bTop, 7.5, false, MUTED, 240);
   }
 
-  // Product Logo on Right
+  // Product Logo or Text Fallback on Right
   if (productLogoImg) {
     const scaled = productLogoImg.scaleToFit(140, 48);
     const pX = A4.width - MARGIN - scaled.width;
@@ -224,7 +244,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     rightHeaderBottom = headerTop - 30;
   }
 
-  // Position below both headers
+  // Position below both header blocks
   y = Math.min(bTop, rightHeaderBottom) - 16;
   page.drawLine({
     start: { x: MARGIN, y },
@@ -234,19 +254,19 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   });
   y -= 18;
 
-  // Document Title Banner
+  // Document Title Banner (Centered)
   page.drawRectangle({
     x: MARGIN, y: y - 32, width: CONTENT_WIDTH, height: 32, color: SOFT_BG,
   });
-  page.drawText('INFLUENCER MARKETING & REVENUE-SHARING AGREEMENT', {
-    x: MARGIN + 12, y: y - 18, size: 11, font: bold, color: INK,
+  page.drawText('INFLUENCER MARKETING & REVENUE-SHARING AGREEMENT — NEXTORA POS', {
+    x: MARGIN + 12, y: y - 18, size: 10.5, font: bold, color: INK,
   });
-  page.drawText(`Commercial Partnership for ${snapshot.product_name || 'Nextora POS'}`, {
+  page.drawText('Marketing Partnership & Commercial Revenue-Sharing Terms', {
     x: MARGIN + 12, y: y - 27, size: 8, font, color: MUTED,
   });
   y -= 44;
 
-  // Summary Metadata Table (Contract #, Dates, Version, Status)
+  // Summary Metadata 4-Column Table
   const metaBoxHeight = 52;
   page.drawRectangle({
     x: MARGIN, y: y - metaBoxHeight, width: CONTENT_WIDTH, height: metaBoxHeight,
@@ -275,20 +295,20 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
 
   // Col 4: GST Treatment
   page.drawText('GST TREATMENT', { x: MARGIN + colW * 3 + 8, y: y - 14, size: 7, font: bold, color: MUTED });
-  page.drawText(`Sales: GST ${snapshot.commercial_terms.product_tax_mode}`, { x: MARGIN + colW * 3 + 8, y: y - 27, size: 8, font: bold, color: INK });
+  page.drawText(`Sales: GST ${snapshot.commercial_terms.product_tax_mode}`, { x: MARGIN + colW * 3 + 8, y: y - 27, size: 8, font, color: INK });
   page.drawText(`Commission: GST ${snapshot.commercial_terms.commission_tax_terms}`, {
     x: MARGIN + colW * 3 + 8, y: y - 40, size: 7, font, color: MUTED,
   });
 
   y -= metaBoxHeight + 16;
 
-  // --- SECTION 1: PARTIES ---
+  // --- SECTION 1: PARTIES TO THE AGREEMENT ---
   drawSectionHeading(1, 'Parties to the Agreement');
 
   const partyBoxWidth = (CONTENT_WIDTH - 12) / 2;
   const partyBoxHeight = 85;
 
-  // Nextora Creations Box
+  // Brand Box (Left)
   page.drawRectangle({
     x: MARGIN, y: y - partyBoxHeight, width: partyBoxWidth, height: partyBoxHeight,
     borderWidth: 0.5, borderColor: LINE, color: SOFT_BG,
@@ -300,7 +320,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   page.drawText(`GSTIN: ${snapshot.business?.gstin || '—'} · PAN: ${snapshot.business?.pan || '—'}`, { x: MARGIN + 8, y: y - 60, size: 7, font, color: MUTED });
   page.drawText(`Contact: ${snapshot.business?.email || '—'}`, { x: MARGIN + 8, y: y - 71, size: 7, font, color: MUTED });
 
-  // Influencer Box
+  // Influencer Box (Right)
   const infX = MARGIN + partyBoxWidth + 12;
   page.drawRectangle({
     x: infX, y: y - partyBoxHeight, width: partyBoxWidth, height: partyBoxHeight,
@@ -327,7 +347,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   drawSectionHeading(2, 'Purpose of the Partnership');
   y = drawText(snapshot.clauses.section_2_purpose, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 3: SCOPE OF WORK & RESPONSIBILITIES ---
+  // --- SECTION 3: SCOPE OF WORK & MARKETING DELIVERABLES ---
   drawSectionHeading(3, 'Scope of Work & Marketing Deliverables');
   y = drawText('The Influencer agrees to deliver the promotional commitments outlined below during the term of this Agreement:', MARGIN, y, 8, false, INK);
   y -= 4;
@@ -335,7 +355,6 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   const deliverables = snapshot.deliverables || [];
   if (deliverables.length > 0) {
     ensureSpace(40);
-    // Table Header
     const rowH = 16;
     page.drawRectangle({
       x: MARGIN, y: y - rowH, width: CONTENT_WIDTH, height: rowH, color: TABLE_HEADER_BG,
@@ -378,7 +397,14 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     y = drawText('Marketing deliverables shall be agreed upon mutually in writing via campaign schedules.', MARGIN, y, 8, false, MUTED);
   }
 
-  // --- SECTION 4: REVENUE-SHARING TERMS & CALCULATION ---
+  // ==================== PAGE 2: SECTIONS 4, 5, 6 ====================
+  // Deterministic page break to Page 2 for clean, robust 3-page layout
+  if (pages.length === 1) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  // --- SECTION 4: REVENUE-SHARING TERMS & CALCULATION BASIS ---
   drawSectionHeading(4, 'Revenue-Sharing Terms & Calculation Basis');
   y = drawText(snapshot.clauses.section_4_revenue_terms, MARGIN, y, 8, false, INK);
 
@@ -413,7 +439,6 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     });
     y -= 14;
 
-    // Table Header
     const rowH = 16;
     page.drawRectangle({
       x: MARGIN, y: y - rowH, width: CONTENT_WIDTH, height: rowH, color: TABLE_HEADER_BG,
@@ -443,7 +468,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
       y -= 16;
     }
 
-    // GST Breakdown Box (Intra-State vs Interstate)
+    // GST Breakdown Box
     ensureSpace(68);
     const boxH = 56;
     page.drawRectangle({
@@ -467,7 +492,6 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     });
     y -= boxH + 8;
 
-    // Disclaimer
     const discLines = wrapText(font, calc.disclaimer || 'Illustrative calculation based on the listed retail prices and the stated GST rate. Actual commission is calculated on verified eligible sales under this agreement, subject to applicable cancellations, refunds, chargebacks, and other agreed adjustments.', 5.5, CONTENT_WIDTH - 8);
     ensureSpace(discLines.length * 7 + 4);
     for (const dLine of discLines) {
@@ -477,23 +501,30 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     y -= 8;
   }
 
-  // --- SECTION 5: MARKETING OBLIGATIONS & CONDUCT ---
-  drawSectionHeading(5, 'Marketing Obligations & Professional Conduct');
+  // --- SECTION 5: MARKETING OBLIGATIONS AND PROFESSIONAL CONDUCT ---
+  drawSectionHeading(5, 'Marketing Obligations and Professional Conduct');
   y = drawText(snapshot.clauses.section_5_conduct_obligations, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 6: BRAND ASSETS & INTELLECTUAL PROPERTY ---
-  drawSectionHeading(6, 'Brand Assets & Intellectual Property');
+  // --- SECTION 6: BRAND ASSETS AND INTELLECTUAL PROPERTY ---
+  drawSectionHeading(6, 'Brand Assets and Intellectual Property');
   y = drawText(snapshot.clauses.section_6_brand_intellectual_property, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 7: PAYMENT, INVOICING & TAXATION ---
-  drawSectionHeading(7, 'Payment, Invoicing & Statutory Deductions');
+  // ==================== PAGE 3: SECTIONS 7, 8, 9, 10 ====================
+  // Deterministic page break to Page 3 for clean, robust 3-page layout
+  if (pages.length === 2) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  // --- SECTION 7: PAYMENT SCHEDULE, INVOICING & TAXES ---
+  drawSectionHeading(7, 'Payment Schedule, Invoicing & Taxes');
   y = drawText(snapshot.clauses.section_7_payment_invoicing, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 8: TERM, TERMINATION & SURVIVAL ---
-  drawSectionHeading(8, 'Term, Termination & Survival');
+  // --- SECTION 8: TERM, TERMINATION & POST-TERMINATION RIGHTS ---
+  drawSectionHeading(8, 'Term, Termination & Post-Termination Rights');
   y = drawText(snapshot.clauses.section_8_term_termination, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 9: GENERAL LEGAL TERMS ---
+  // --- SECTION 9: GENERAL LEGAL PROVISIONS ---
   drawSectionHeading(9, 'General Legal Provisions');
   y = drawText(snapshot.clauses.section_9_general_legal, MARGIN, y, 8, false, INK);
 
@@ -503,9 +534,8 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     y = drawText(snapshot.special_terms, MARGIN, y, 8, false, INK);
   }
 
-  // --- SECTION 10: ACCEPTANCE & SIGNATURES ---
-  // Ensure the entire signature block fits on one page
-  ensureSpace(150);
+  // --- SECTION 10: ACCEPTANCE & EXECUTION ---
+  ensureSpace(140);
   drawSectionHeading(10, 'Acceptance & Execution');
   y = drawText('IN WITNESS WHEREOF, the parties hereto have caused this Agreement to be duly executed by their authorized representatives as of the dates set forth below:', MARGIN, y, 8, false, INK);
   y -= 10;
@@ -526,8 +556,8 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     color: MUTED,
   });
   page.drawText('Authorized Signature', { x: MARGIN + 10, y: y - 56, size: 6.5, font, color: MUTED });
-  page.drawText(`Name: ${snapshot.business?.signatory_name || 'Authorized Signatory'}`, { x: MARGIN + 10, y: y - 68, size: 7.5, font: bold, color: INK });
-  page.drawText(`Designation: ${snapshot.business?.signatory_title || 'Director'}`, { x: MARGIN + 10, y: y - 79, size: 7, font, color: MUTED });
+  page.drawText(`Name: ${snapshot.business?.signatory_name || 'Gorke Sai Kumar'}`, { x: MARGIN + 10, y: y - 68, size: 7.5, font: bold, color: INK });
+  page.drawText(`Designation: ${snapshot.business?.signatory_title || 'Founder & CEO'}`, { x: MARGIN + 10, y: y - 79, size: 7, font, color: MUTED });
   page.drawText('Date: ________________________', { x: MARGIN + 10, y: y - 90, size: 7, font, color: MUTED });
 
   // Influencer Signatory Block
@@ -555,7 +585,7 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     x: MARGIN, y: y - 8, size: 6, font, color: MUTED,
   });
 
-  // Footers across all pages
+  // ==================== RUNNING FOOTERS (POST-PROCESSING PASS) ====================
   const totalPages = pages.length;
   pages.forEach((p, index) => {
     p.drawLine({
@@ -574,5 +604,5 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     });
   });
 
-  return await doc.save();
+  return Buffer.from(await doc.save());
 }

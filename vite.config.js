@@ -5,7 +5,7 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: false,
-    proxy: { '/api': { target: 'http://127.0.0.1:8888' } },
+    proxy: { '/api': { target: `http://127.0.0.1:${process.env.API_PORT || 8888}` } },
   },
   esbuild: {
     drop: ['debugger'],

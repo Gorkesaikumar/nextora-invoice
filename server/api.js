@@ -6,7 +6,7 @@ import {
   convertSchema, PAYMENT_METHODS, INTERVALS, TAX_TREATMENTS, ROUNDING_MODES,
   posCustomerSchema, customFieldSchema, customValuesSchema, columnOrderSchema, employeeSchema, planSchema,
   privateShareSchema, publicShareSchema, shareUpdateSchema, importPreviewSchema, importApplySchema,
-  subscriptionSchema, FIELD_TYPES, SUBSCRIPTION_STATUSES, ROLES,
+  subscriptionSchema, subscriptionUpdateSchema, FIELD_TYPES, SUBSCRIPTION_STATUSES, ROLES,
   cleanupPreviewSchema, cleanupExportSchema, cleanupExecuteSchema,
   influencerSchema, agreementDraftSchema, agreementUpdateSchema, agreementStatusActionSchema,
   salesImportApplySchema, saleStatusUpdateSchema, bulkSaleStatusUpdateSchema,
@@ -34,14 +34,17 @@ import {
 import {
   dashboard, invoiceRegister, collectionReport, receivables, quotationReport, revenueByClient,
   revenueByProduct, taxSummary, auditTrail, businessOverview, customerStatement, toCsv,
+  monthlyCompanyRevenue, clientRegister, quotationRegister, influencerRegisterReport,
+  influencerSalesDetailReport, importBatchesReport,
 } from './reports.js';
 import { renderDocument } from './pdf.js';
 import { renderReportPdf } from './report-pdf.js';
 import { renderReportHtml } from './report-html.js';
+import { renderReportExcel } from './report-excel.js';
 import { previewNumber } from './numbering.js';
 import {
-  columnCatalog, listCustomers, getCustomer, createCustomer, updateCustomer, setCustomerStatus, customerWarnings,
-  addSubscription, updateSubscription, trackerMetrics, listEmployees, createEmployee, setEmployeeStatus,
+  columnCatalog, listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, setCustomerStatus, customerWarnings,
+  addSubscription, updateSubscription, deleteSubscription, trackerMetrics, listEmployees, createEmployee, setEmployeeStatus,
   listPlans, createPlan, updatePlan, listCustomFields, createCustomField, updateCustomField, setCustomFieldStatus,
   saveCustomValues, saveColumnLayout, trackerRowsForExport, columnKeys, resolveColumns,
 } from './tracker.js';
@@ -63,6 +66,7 @@ import {
   saveBrandLogo, brandLogoBytes, getBrandAssetsSummary,
 } from './marketing.js';
 import { renderContractPdf } from './contract-pdf.js';
+import { renderInfluencerContractHtml } from './influencer-contract-template.js';
 import {
   listSoftwareAgreements, getSoftwareAgreement, createSoftwareAgreement, updateSoftwareAgreementDraft,
   transitionSoftwareAgreementStatus, duplicateSoftwareAgreement, deleteDraftSoftwareAgreement, buildSoftwareContractSnapshot,
@@ -72,8 +76,9 @@ import { renderSoftwareContractPdf } from './software-contract-pdf.js';
 import { renderSoftwareContractHtml } from './software-contract-template.js';
 import {
   generateSalesTemplate, parseAndValidateSalesFile, confirmSalesImport, listSalesBatches,
+  getSalesBatch, deleteSalesBatch, exportBatchSalesToExcel,
   getSalesDashboardMetrics, listSalesRecords, updateSaleRecordStatus, bulkUpdateSalesStatus,
-  exportSalesToExcel,
+  exportSalesToExcel, exportSalesToCsv,
 } from './influencer-sales.js';
 import {
   renderInfluencerSalesReportPdf, renderConsolidatedSalesReportPdf,
@@ -680,6 +685,14 @@ export function createAPI(db, config) {
         },
       });
 
+      const reportExcelResponse = (filename, excelBuf) => new Response(excelBuf, {
+        headers: {
+          ...baseHeaders,
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="${safeName(filename)}"`,
+        },
+      });
+
       const reportHtmlResponse = html => new Response(html, {
         headers: {
           ...baseHeaders,
@@ -698,13 +711,17 @@ export function createAPI(db, config) {
 
         let reportData;
         if (section === 'overview') reportData = await businessOverview(db, url);
+        else if (section === 'monthly_revenue') reportData = await monthlyCompanyRevenue(db, url);
         else if (section === 'invoices') reportData = await invoiceRegister(db, url);
         else if (section === 'collections') reportData = await collectionReport(db, url);
         else if (section === 'receivables') reportData = await receivables(db);
         else if (section === 'quotations') reportData = await quotationReport(db, url);
-        else if (section === 'clients') reportData = await revenueByClient(db, url);
+        else if (section === 'clients') reportData = await clientRegister(db, url);
         else if (section === 'products') reportData = await revenueByProduct(db, url);
         else if (section === 'tax') reportData = await taxSummary(db, url);
+        else if (section === 'influencers') reportData = await influencerRegisterReport(db, url);
+        else if (section === 'influencer_sales') reportData = await influencerSalesDetailReport(db, url);
+        else if (section === 'imports') reportData = await importBatchesReport(db, url);
         else if (section === 'statement') reportData = await customerStatement(db, url.searchParams.get('client_id'), url);
         else throw new HttpError(400, `Unknown report section: ${section}`, 'UNKNOWN_SECTION');
 
@@ -722,11 +739,39 @@ export function createAPI(db, config) {
         return reportPdfResponse(`report-${section}-${new Date().toISOString().slice(0, 10)}.pdf`, pdfBytes, { view });
       }
 
+      if (path === '/api/reports/export-excel' && method === 'GET') {
+        const section = (url.searchParams.get('section') || 'invoices').toLowerCase();
+        let reportData;
+        if (section === 'overview') reportData = await businessOverview(db, url);
+        else if (section === 'monthly_revenue') reportData = await monthlyCompanyRevenue(db, url);
+        else if (section === 'invoices') reportData = await invoiceRegister(db, url);
+        else if (section === 'collections') reportData = await collectionReport(db, url);
+        else if (section === 'receivables') reportData = await receivables(db);
+        else if (section === 'quotations') reportData = await quotationReport(db, url);
+        else if (section === 'clients') reportData = await clientRegister(db, url);
+        else if (section === 'products') reportData = await revenueByProduct(db, url);
+        else if (section === 'tax') reportData = await taxSummary(db, url);
+        else if (section === 'influencers') reportData = await influencerRegisterReport(db, url);
+        else if (section === 'influencer_sales') reportData = await influencerSalesDetailReport(db, url);
+        else if (section === 'imports') reportData = await importBatchesReport(db, url);
+        else throw new HttpError(400, `Unknown report section: ${section}`, 'UNKNOWN_SECTION');
+
+        const options = {
+          from: url.searchParams.get('from'),
+          to: url.searchParams.get('to'),
+          rangeLabel: url.searchParams.get('range_label') || (reportData.range?.label),
+        };
+
+        const excelBuf = await renderReportExcel(section, reportData, options);
+        return reportExcelResponse(`report-${section}-${new Date().toISOString().slice(0, 10)}.xlsx`, excelBuf);
+      }
+
       if (path === '/api/reports/overview' && method === 'GET') {
         const data = await businessOverview(db, url);
         const format = url.searchParams.get('format');
         const options = { from: data.range?.from, to: data.range?.to, rangeLabel: data.range?.label };
         if (format === 'pdf') return reportPdfResponse('overview.pdf', await renderReportPdf('overview', data, options));
+        if (format === 'xlsx') return reportExcelResponse('overview.xlsx', await renderReportExcel('overview', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('overview', data, options));
         return json(data);
       }
@@ -755,6 +800,93 @@ export function createAPI(db, config) {
       }
 
       const csvReports = {
+        '/api/reports/monthly-revenue': ['monthly-revenue.csv', async () => {
+          const data = await monthlyCompanyRevenue(db, url);
+          return toCsv([
+            { key: 'month_label', label: 'Month' },
+            { key: 'invoices_count', label: 'Invoices Count' },
+            { key: 'gross_invoiced_minor', label: 'Gross Invoiced' },
+            { key: 'discounts_minor', label: 'Discounts' },
+            { key: 'taxable_minor', label: 'Taxable Turnover' },
+            { key: 'tax_minor', label: 'Tax' },
+            { key: 'net_invoiced_minor', label: 'Net Invoiced Sales' },
+            { key: 'collected_minor', label: 'Collections' },
+            { key: 'refunds_minor', label: 'Refunds' },
+            { key: 'net_collected_minor', label: 'Net Collections' },
+            { key: 'receivables_minor', label: 'Receivables' },
+            { key: 'influencer_sales_minor', label: 'Influencer Sales' },
+            { key: 'influencer_commission_earned_minor', label: 'Commission Earned' },
+            { key: 'influencer_commission_payable_minor', label: 'Commission Due' },
+            { key: 'growth_pct', label: 'MoM Growth %' },
+          ], data.rows);
+        }],
+        '/api/reports/client-register': ['client-register.csv', async () => {
+          const data = await clientRegister(db, url);
+          return toCsv([
+            { key: 'name', label: 'Client Name' },
+            { key: 'company_name', label: 'Company Name' },
+            { key: 'gstin', label: 'GSTIN' },
+            { key: 'email', label: 'Email' },
+            { key: 'phone', label: 'Phone' },
+            { key: 'city', label: 'City' },
+            { key: 'quotation_count', label: 'Quotations' },
+            { key: 'invoice_count', label: 'Invoices' },
+            { key: 'gross_invoiced_minor', label: 'Gross Invoiced' },
+            { key: 'discounts_minor', label: 'Discounts' },
+            { key: 'taxable_minor', label: 'Taxable Value' },
+            { key: 'tax_minor', label: 'GST' },
+            { key: 'invoiced_minor', label: 'Net Invoiced' },
+            { key: 'collected_minor', label: 'Collected' },
+            { key: 'refunds_minor', label: 'Refunds' },
+            { key: 'balance_minor', label: 'Outstanding Balance' },
+            { key: 'overdue_minor', label: 'Overdue Balance' },
+          ], data.rows);
+        }],
+        '/api/reports/influencer-register': ['influencer-register.csv', async () => {
+          const data = await influencerRegisterReport(db, url);
+          return toCsv([
+            { key: 'legal_name', label: 'Legal Name' },
+            { key: 'display_name', label: 'Display Name' },
+            { key: 'handle', label: 'Handle / Code' },
+            { key: 'contract_number', label: 'Contract #' },
+            { key: 'commission_rate_bp', label: 'Commission Rate (bp)' },
+            { key: 'sales_count', label: 'Attributed Sales Count' },
+            { key: 'attributed_sales_minor', label: 'Gross Sales' },
+            { key: 'eligible_revenue_minor', label: 'Eligible Revenue' },
+            { key: 'commission_earned_minor', label: 'Commission Earned' },
+            { key: 'commission_paid_minor', label: 'Commission Paid' },
+            { key: 'commission_payable_minor', label: 'Commission Payable' },
+          ], data.rows);
+        }],
+        '/api/reports/influencer-sales': ['influencer-sales.csv', async () => {
+          const data = await influencerSalesDetailReport(db, url);
+          return toCsv([
+            { key: 'sale_date', label: 'Sale Date' },
+            { key: 'customer_name', label: 'Customer' },
+            { key: 'product_name', label: 'Product' },
+            { key: 'influencer_name', label: 'Partner' },
+            { key: 'sale_amount_minor', label: 'Sale Amount' },
+            { key: 'tax_minor', label: 'Tax' },
+            { key: 'eligible_revenue_minor', label: 'Eligible Revenue' },
+            { key: 'commission_rate_bp', label: 'Commission Rate (bp)' },
+            { key: 'commission_minor', label: 'Commission' },
+            { key: 'payment_status', label: 'Status' },
+          ], data.rows);
+        }],
+        '/api/reports/import-batches': ['import-batches.csv', async () => {
+          const data = await importBatchesReport(db, url);
+          return toCsv([
+            { key: 'id', label: 'Batch ID' },
+            { key: 'imported_at', label: 'Imported At' },
+            { key: 'filename', label: 'Filename' },
+            { key: 'row_count', label: 'Total Rows' },
+            { key: 'valid_count', label: 'Valid Sales' },
+            { key: 'error_count', label: 'Errors' },
+            { key: 'status', label: 'Status' },
+            { key: 'total_sales_minor', label: 'Total Sales' },
+            { key: 'total_commission_minor', label: 'Total Commission' },
+          ], data.rows);
+        }],
         '/api/reports/invoices': ['invoices.csv', async () => {
           const data = await invoiceRegister(db, url);
           return toCsv([
@@ -834,11 +966,59 @@ export function createAPI(db, config) {
         if (url.searchParams.get('format') === 'csv') return csvFile(name, await build());
       }
 
+      if (path === '/api/reports/monthly-revenue' && method === 'GET') {
+        const data = await monthlyCompanyRevenue(db, url);
+        const format = url.searchParams.get('format');
+        const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to'), rangeLabel: data.range?.label };
+        if (format === 'pdf') return reportPdfResponse('monthly-revenue.pdf', await renderReportPdf('monthly_revenue', data, options));
+        if (format === 'xlsx') return reportExcelResponse('monthly-revenue.xlsx', await renderReportExcel('monthly_revenue', data, options));
+        if (format === 'html') return reportHtmlResponse(renderReportHtml('monthly_revenue', data, options));
+        return json(data);
+      }
+
+      if (path === '/api/reports/client-register' && method === 'GET') {
+        const data = await clientRegister(db, url);
+        const format = url.searchParams.get('format');
+        const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to'), rangeLabel: data.range?.label };
+        if (format === 'pdf') return reportPdfResponse('clients.pdf', await renderReportPdf('clients', data, options));
+        if (format === 'xlsx') return reportExcelResponse('client-register.xlsx', await renderReportExcel('clients', data, options));
+        if (format === 'html') return reportHtmlResponse(renderReportHtml('clients', data, options));
+        return json(data);
+      }
+
+      if (path === '/api/reports/influencer-register' && method === 'GET') {
+        const data = await influencerRegisterReport(db, url);
+        const format = url.searchParams.get('format');
+        const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to'), rangeLabel: data.range?.label };
+        if (format === 'pdf') return reportPdfResponse('influencers.pdf', await renderReportPdf('influencers', data, options));
+        if (format === 'xlsx') return reportExcelResponse('influencer-register.xlsx', await renderReportExcel('influencers', data, options));
+        return json(data);
+      }
+
+      if (path === '/api/reports/influencer-sales' && method === 'GET') {
+        const data = await influencerSalesDetailReport(db, url);
+        const format = url.searchParams.get('format');
+        const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to'), rangeLabel: data.range?.label };
+        if (format === 'pdf') return reportPdfResponse('influencer-sales.pdf', await renderReportPdf('influencer_sales', data, options));
+        if (format === 'xlsx') return reportExcelResponse('influencer-sales.xlsx', await renderReportExcel('influencer_sales', data, options));
+        return json(data);
+      }
+
+      if (path === '/api/reports/import-batches' && method === 'GET') {
+        const data = await importBatchesReport(db, url);
+        const format = url.searchParams.get('format');
+        const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to'), rangeLabel: data.range?.label };
+        if (format === 'pdf') return reportPdfResponse('imports.pdf', await renderReportPdf('imports', data, options));
+        if (format === 'xlsx') return reportExcelResponse('import-batches.xlsx', await renderReportExcel('imports', data, options));
+        return json(data);
+      }
+
       if (path === '/api/reports/invoices' && method === 'GET') {
         const data = await invoiceRegister(db, url);
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('invoices.pdf', await renderReportPdf('invoices', data, options));
+        if (format === 'xlsx') return reportExcelResponse('invoices.xlsx', await renderReportExcel('invoices', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('invoices', data, options));
         return json(data);
       }
@@ -848,6 +1028,7 @@ export function createAPI(db, config) {
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('collections.pdf', await renderReportPdf('collections', data, options));
+        if (format === 'xlsx') return reportExcelResponse('collections.xlsx', await renderReportExcel('collections', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('collections', data, options));
         return json(data);
       }
@@ -856,6 +1037,7 @@ export function createAPI(db, config) {
         const data = await receivables(db);
         const format = url.searchParams.get('format');
         if (format === 'pdf') return reportPdfResponse('receivables.pdf', await renderReportPdf('receivables', data));
+        if (format === 'xlsx') return reportExcelResponse('receivables.xlsx', await renderReportExcel('receivables', data));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('receivables', data));
         return json(data);
       }
@@ -865,6 +1047,7 @@ export function createAPI(db, config) {
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('quotations.pdf', await renderReportPdf('quotations', data, options));
+        if (format === 'xlsx') return reportExcelResponse('quotations.xlsx', await renderReportExcel('quotations', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('quotations', data, options));
         return json(data);
       }
@@ -874,6 +1057,7 @@ export function createAPI(db, config) {
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('clients.pdf', await renderReportPdf('clients', data, options));
+        if (format === 'xlsx') return reportExcelResponse('clients.xlsx', await renderReportExcel('clients', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('clients', data, options));
         return json(data);
       }
@@ -883,6 +1067,7 @@ export function createAPI(db, config) {
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('products.pdf', await renderReportPdf('products', data, options));
+        if (format === 'xlsx') return reportExcelResponse('products.xlsx', await renderReportExcel('products', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('products', data, options));
         return json(data);
       }
@@ -892,6 +1077,7 @@ export function createAPI(db, config) {
         const format = url.searchParams.get('format');
         const options = { from: url.searchParams.get('from'), to: url.searchParams.get('to') };
         if (format === 'pdf') return reportPdfResponse('tax-summary.pdf', await renderReportPdf('tax', data, options));
+        if (format === 'xlsx') return reportExcelResponse('tax-summary.xlsx', await renderReportExcel('tax', data, options));
         if (format === 'html') return reportHtmlResponse(renderReportHtml('tax', data, options));
         return json(data);
       }
@@ -955,6 +1141,10 @@ export function createAPI(db, config) {
           }));
           return json(await updateCustomer(db, actor, id, input));
         }
+        if (!action && method === 'DELETE') {
+          requireWriter(actor);
+          return json(await deleteCustomer(db, actor, id));
+        }
         if (action === 'status' && method === 'POST') {
           requireWriter(actor);
           const input = await body(request, z.object({ status: z.enum(['ACTIVE', 'ARCHIVED']) }).strict());
@@ -974,8 +1164,12 @@ export function createAPI(db, config) {
       const subscriptionMatch = path.match(/^\/api\/tracker\/subscriptions\/([^/]+)$/);
       if (subscriptionMatch && method === 'PATCH') {
         requireWriter(actor);
-        const input = await body(request, subscriptionSchema.omit({ renews: true }));
+        const input = await body(request, subscriptionUpdateSchema);
         return json({ subscription: await updateSubscription(db, actor, uuid.parse(subscriptionMatch[1]), input) });
+      }
+      if (subscriptionMatch && method === 'DELETE') {
+        requireWriter(actor);
+        return json(await deleteSubscription(db, actor, uuid.parse(subscriptionMatch[1])));
       }
       if (path === '/api/tracker/columns' && method === 'PUT') {
         requireWriter(actor);
@@ -1236,40 +1430,48 @@ export function createAPI(db, config) {
           return json({ agreement: await duplicateAgreement(db, actor, id) }, 201);
         }
         if (action === 'preview' && method === 'GET') {
-          return json({ snapshot: await buildContractSnapshot(db, id) });
+          const snapshot = await buildContractSnapshot(db, id);
+          const html = renderInfluencerContractHtml(snapshot, { standalone: false });
+          return json({
+            snapshot,
+            html,
+            companyLogoDataUri: snapshot.company_logo?.data_uri || '',
+            productLogoDataUri: snapshot.product_logo?.data_uri || '',
+          });
+        }
+        if (action === 'html' && method === 'GET') {
+          const snapshot = await buildContractSnapshot(db, id);
+          const html = renderInfluencerContractHtml(snapshot, { standalone: true });
+          const safeContractNum = (snapshot.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+          return new Response(html, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Type': 'text/html; charset=utf-8',
+              'Content-Disposition': `attachment; filename="${safeContractNum}_Influencer_Agreement.html"`,
+            },
+          });
         }
         if (action === 'generate-pdf' && method === 'POST') {
           const snapshot = await buildContractSnapshot(db, id);
           await recordPdfGenerated(db, actor, id, snapshot);
-          const [companyLogo, productLogo] = await Promise.all([
-            brandLogoBytes(db, 'company_logo').catch(() => null),
-            brandLogoBytes(db, 'product_logo').catch(() => null),
-          ]);
-          const bytes = await renderContractPdf(snapshot, { companyLogo, productLogo });
+          const bytes = await renderContractPdf(snapshot);
           return json({
             success: true,
             contract_number: snapshot.contract_number,
-            pdf_generated_at: snapshot.pdf_generated_at,
+            pdf_generated_at: snapshot.pdf_generated_at || new Date().toISOString(),
             bytes_length: bytes.length,
           });
         }
         if (action === 'pdf' && method === 'GET') {
-          const agreement = await getAgreement(db, id);
-          const snapshot = agreement.snapshot
-            ? (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot)
-            : await buildContractSnapshot(db, id);
-
-          const [companyLogo, productLogo] = await Promise.all([
-            brandLogoBytes(db, 'company_logo').catch(() => null),
-            brandLogoBytes(db, 'product_logo').catch(() => null),
-          ]);
-          const bytes = await renderContractPdf(snapshot, { companyLogo, productLogo });
-          const safeContractNum = (agreement.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+          const snapshot = await buildContractSnapshot(db, id);
+          const bytes = await renderContractPdf(snapshot);
+          const safeContractNum = (snapshot.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
           const isView = url.searchParams.get('view') === 'true';
 
           await audit(db, 'AGREEMENT_PDF_DOWNLOADED', {
             actorId: actor.id, entityType: 'AGREEMENT', entityId: id,
-            metadata: { contract_number: agreement.contract_number, is_view: isView }
+            metadata: { contract_number: snapshot.contract_number, is_view: isView }
           });
 
           return new Response(bytes, {
@@ -1489,6 +1691,33 @@ export function createAPI(db, config) {
         return json(await listSalesBatches(db, { page }));
       }
 
+      const batchExportMatch = path.match(/^\/api\/marketing\/sales\/batches\/([0-9a-fA-F-]+)\/export\.xlsx$/);
+      if (batchExportMatch && method === 'GET') {
+        requireManager(actor);
+        const id = uuid.parse(batchExportMatch[1]);
+        const buf = await exportBatchSalesToExcel(db, id);
+        return fileResponse(`batch_sales_${id}.xlsx`, buf);
+      }
+
+      const batchMatch = path.match(/^\/api\/marketing\/sales\/batches\/([0-9a-fA-F-]+)$/);
+      if (batchMatch && method === 'GET') {
+        requireManager(actor);
+        const id = uuid.parse(batchMatch[1]);
+        return json(await getSalesBatch(db, id));
+      }
+
+      if (batchMatch && method === 'DELETE') {
+        requireManager(actor);
+        const id = uuid.parse(batchMatch[1]);
+        let input = {};
+        try {
+          input = await body(request, null, 10000);
+        } catch {
+          input = {};
+        }
+        return json(await deleteSalesBatch(db, actor, id, input));
+      }
+
       if (path === '/api/marketing/sales/dashboard' && method === 'GET') {
         requireManager(actor);
         const fromDate = url.searchParams.get('fromDate') || '';
@@ -1533,6 +1762,29 @@ export function createAPI(db, config) {
         return fileResponse(`nextora_influencer_sales_${monthStr}.xlsx`, buf);
       }
 
+      if (path === '/api/marketing/sales/export.csv' && method === 'GET') {
+        requireManager(actor);
+        const influencerId = url.searchParams.get('influencerId') || null;
+        const search = url.searchParams.get('search') || '';
+        const fromDate = url.searchParams.get('fromDate') || '';
+        const toDate = url.searchParams.get('toDate') || '';
+        const productId = url.searchParams.get('productId') || '';
+        const status = url.searchParams.get('status') || '';
+        const { records } = await listSalesRecords(db, { influencerId, search, fromDate, toDate, productId, status, page: 1, limit: 10000 });
+        const influencer = influencerId ? await getInfluencer(db, influencerId) : null;
+        const csvStr = await exportSalesToCsv({
+          records,
+          influencer,
+          filters: { search, fromDate, toDate, productId, status }
+        });
+        const monthStr = new Date().toISOString().slice(0, 7);
+        await audit(db, 'SALES_CSV_EXPORTED', {
+          actorId: actor.id, entityType: 'SALES_EXPORT',
+          metadata: { record_count: records.length, filters: { influencerId, search, fromDate, toDate, productId, status } }
+        });
+        return fileResponse(`nextora_influencer_sales_${monthStr}.csv`, Buffer.from(csvStr, 'utf-8'), 'text/csv; charset=utf-8');
+      }
+
       if (path === '/api/marketing/sales/bulk-status' && method === 'POST') {
         requireManager(actor);
         const input = await body(request, bulkSaleStatusUpdateSchema);
@@ -1552,7 +1804,8 @@ export function createAPI(db, config) {
         const fromDate = url.searchParams.get('fromDate') || '';
         const toDate = url.searchParams.get('toDate') || '';
         const productId = url.searchParams.get('productId') || '';
-        const data = await getSalesDashboardMetrics(db, { fromDate, toDate, productId });
+        const influencerId = url.searchParams.get('influencerId') || '';
+        const data = await getSalesDashboardMetrics(db, { fromDate, toDate, productId, influencerId });
         const [companyLogo, productLogo] = await Promise.all([
           brandLogoBytes(db, 'company_logo').catch(() => null),
           brandLogoBytes(db, 'product_logo').catch(() => null),
@@ -1563,7 +1816,7 @@ export function createAPI(db, config) {
 
         await audit(db, 'CONSOLIDATED_SALES_REPORT_DOWNLOADED', {
           actorId: actor.id, entityType: 'SALES_REPORT',
-          metadata: { fromDate, toDate, productId, is_view: isView }
+          metadata: { fromDate, toDate, productId, influencerId, is_view: isView }
         });
 
         return new Response(bytes, {
@@ -1576,7 +1829,7 @@ export function createAPI(db, config) {
         });
       }
 
-      const influencerSalesMatch = path.match(/^\/api\/marketing\/influencers\/([0-9a-fA-F-]+)\/sales(?:\/(export\.xlsx|report\.pdf))?$/);
+      const influencerSalesMatch = path.match(/^\/api\/marketing\/influencers\/([0-9a-fA-F-]+)\/sales(?:\/(export\.xlsx|report\.pdf|export\.csv))?$/);
       if (influencerSalesMatch) {
         requireManager(actor);
         const infId = uuid.parse(influencerSalesMatch[1]);
@@ -1617,6 +1870,29 @@ export function createAPI(db, config) {
           });
 
           return fileResponse(`nextora_influencer_sales_${safeName}_${monthStr}.xlsx`, buf);
+        }
+
+        if (action === 'export.csv' && method === 'GET') {
+          const search = url.searchParams.get('search') || '';
+          const fromDate = url.searchParams.get('fromDate') || '';
+          const toDate = url.searchParams.get('toDate') || '';
+          const productId = url.searchParams.get('productId') || '';
+          const status = url.searchParams.get('status') || '';
+          const { records } = await listSalesRecords(db, { influencerId: infId, search, fromDate, toDate, productId, status, page: 1, limit: 10000 });
+          const csvStr = await exportSalesToCsv({
+            records,
+            influencer,
+            filters: { search, fromDate, toDate, productId, status }
+          });
+          const safeName = (influencer.display_name || 'influencer').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const monthStr = new Date().toISOString().slice(0, 7);
+
+          await audit(db, 'INFLUENCER_SALES_CSV_EXPORTED', {
+            actorId: actor.id, entityType: 'SALES_EXPORT', entityId: infId,
+            metadata: { influencer_id: infId, record_count: records.length }
+          });
+
+          return fileResponse(`nextora_influencer_sales_${safeName}_${monthStr}.csv`, Buffer.from(csvStr, 'utf-8'), 'text/csv; charset=utf-8');
         }
 
         if (action === 'report.pdf' && method === 'GET') {

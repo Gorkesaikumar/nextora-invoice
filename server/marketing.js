@@ -538,8 +538,11 @@ export async function updateAgreementDraft(db, actor, id, input) {
       deliverables = $19, custom_clauses = $20, special_terms = $21,
       signatory_name = $22, signatory_title = $23, influencer_signatory_name = $24,
       branding_mode = $25,
+      influencer_id = COALESCE($26, influencer_id),
+      pdf_generated_at = NULL,
+      snapshot = NULL,
       updated_at = now()
-    WHERE id = $26
+    WHERE id = $27
     RETURNING *
   `, [
     input.title || existing.title,
@@ -567,6 +570,7 @@ export async function updateAgreementDraft(db, actor, id, input) {
     input.signatory_title || existing.signatory_title,
     input.influencer_signatory_name || existing.influencer_signatory_name,
     input.branding_mode || existing.branding_mode || 'BOTH',
+    input.influencer_id || null,
     id
   ]);
 
@@ -630,6 +634,12 @@ export async function transitionAgreementStatus(db, actor, id, { action, reason 
 
   addField('status', newStatus);
   addField('updated_at', new Date().toISOString());
+  if (['ACCEPTED', 'SIGNED', 'ACTIVE'].includes(newStatus) && !existing.snapshot) {
+    const snap = await buildContractSnapshot(db, id);
+    snap.status = newStatus;
+    snap.is_finalized = true;
+    addField('snapshot', JSON.stringify(snap));
+  }
   params.push(id);
 
   const { rows } = await db.query(`
@@ -757,6 +767,23 @@ export async function duplicateAgreement(db, actor, id) {
 
 export async function buildContractSnapshot(db, agreementId) {
   const agreement = await getAgreement(db, agreementId);
+
+  // Immutability rule: For finalized agreements with an existing snapshot, return the immutable snapshot
+  if (['ACCEPTED', 'SIGNED', 'ACTIVE', 'TERMINATED', 'ARCHIVED'].includes(agreement.status) && agreement.snapshot) {
+    const existing = typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot;
+    if (existing && existing.contract_number) {
+      existing.status = agreement.status;
+      existing.is_finalized = true;
+      if (!existing.company_logo) {
+        existing.company_logo = { exists: false, data_uri: '', dataUri: '', mime_type: '', sha256: '', width: 0, height: 0, warning: '' };
+      }
+      if (!existing.product_logo) {
+        existing.product_logo = { exists: false, data_uri: '', dataUri: '', mime_type: '', sha256: '', width: 0, height: 0, warning: '' };
+      }
+      return existing;
+    }
+  }
+
   const { rows: settingsRows } = await db.query('SELECT * FROM inv.business_settings WHERE id = true');
   const business = settingsRows[0] || {};
 
@@ -791,13 +818,68 @@ export async function buildContractSnapshot(db, agreementId) {
     products_disclaimer: productIllustrations.disclaimer,
   };
 
+  const brandingMode = agreement.branding_mode || 'BOTH';
+  const allowCompany = brandingMode === 'BOTH' || brandingMode === 'COMPANY_ONLY';
+  const allowProduct = brandingMode === 'BOTH' || brandingMode === 'PRODUCT_ONLY';
+
+  let companyLogoAsset = { exists: false, data_uri: '', dataUri: '', mime_type: '', sha256: '', width: 0, height: 0, warning: '' };
+  if (allowCompany) {
+    const comp = await brandLogoBytes(db, 'company_logo').catch(() => null);
+    if (comp?.bytes) {
+      const isPng = comp.mimeType === 'image/png';
+      const isJpg = comp.mimeType === 'image/jpeg';
+      const dims = extractImageDimensions(comp.bytes, isPng, isJpg);
+      const b64 = Buffer.from(comp.bytes).toString('base64');
+      const dataUri = `data:${comp.mimeType};base64,${b64}`;
+      companyLogoAsset = {
+        exists: true,
+        data_uri: dataUri,
+        dataUri: dataUri,
+        mime_type: comp.mimeType,
+        sha256: hash(b64),
+        width: dims.width,
+        height: dims.height,
+        warning: '',
+      };
+    } else {
+      companyLogoAsset.warning = 'Corporate logo is configured for this agreement but has not been uploaded.';
+    }
+  }
+
+  let productLogoAsset = { exists: false, data_uri: '', dataUri: '', mime_type: '', sha256: '', width: 0, height: 0, warning: '' };
+  if (allowProduct) {
+    const prod = await brandLogoBytes(db, 'product_logo').catch(() => null);
+    if (prod?.bytes) {
+      const isPng = prod.mimeType === 'image/png';
+      const isJpg = prod.mimeType === 'image/jpeg';
+      const dims = extractImageDimensions(prod.bytes, isPng, isJpg);
+      const b64 = Buffer.from(prod.bytes).toString('base64');
+      const dataUri = `data:${prod.mimeType};base64,${b64}`;
+      productLogoAsset = {
+        exists: true,
+        data_uri: dataUri,
+        dataUri: dataUri,
+        mime_type: prod.mimeType,
+        sha256: hash(b64),
+        width: dims.width,
+        height: dims.height,
+        warning: '',
+      };
+    } else {
+      productLogoAsset.warning = 'Nextora POS product logo is configured for this agreement but has not been uploaded.';
+    }
+  }
+
+  const isFinalized = ['ACCEPTED', 'SIGNED', 'ACTIVE', 'TERMINATED', 'ARCHIVED'].includes(agreement.status);
+
   return {
     contract_id: agreement.id,
     contract_number: agreement.contract_number,
     version: agreement.version,
     status: agreement.status,
-    title: agreement.title,
-    branding_mode: agreement.branding_mode || 'BOTH',
+    is_finalized: isFinalized,
+    title: agreement.title || 'Influencer Marketing & Revenue-Sharing Agreement — Nextora POS',
+    branding_mode: brandingMode,
     brand_name: agreement.brand_name || 'Nextora Creations',
     product_name: agreement.product_name || 'Nextora POS',
     created_at: agreement.created_at,
@@ -809,6 +891,9 @@ export async function buildContractSnapshot(db, agreementId) {
     payment_frequency: agreement.payment_frequency,
     payment_due_days: agreement.payment_due_days,
     minimum_payout_minor: agreement.minimum_payout_minor,
+
+    company_logo: companyLogoAsset,
+    product_logo: productLogoAsset,
 
     commercial_terms: {
       commission_percentage: (agreement.commission_basis_points / 100).toFixed(2),
@@ -830,32 +915,32 @@ export async function buildContractSnapshot(db, agreementId) {
 
     business: {
       business_name: business.business_name || 'Nextora Creations',
-      legal_name: business.legal_name || 'Nextora Creations',
-      address: business.address || '',
-      email: business.email || '',
-      phone: business.phone || '',
-      website: business.website || '',
-      gstin: business.gstin || '',
-      pan: business.pan || '',
-      signatory_name: agreement.signatory_name || business.signatory_name || 'Authorized Signatory',
-      signatory_title: agreement.signatory_title || business.signatory_title || 'Director',
+      legal_name: business.legal_name || 'Nextora Creations Software Solutions',
+      address: business.address || 'Ambedkar colony, Nizamabad, Telangana 503001',
+      email: business.email || 'support@nextoracreations.co.in',
+      phone: business.phone || '7674981970',
+      website: business.website || 'https://nextoracreations.co.in/',
+      gstin: business.gstin || '36JTAPK9167A1ZK',
+      pan: business.pan || 'JTAPK9167A',
+      signatory_name: agreement.signatory_name || business.signatory_name || 'Gorke Sai Kumar',
+      signatory_title: agreement.signatory_title || business.signatory_title || 'Founder & CEO',
       pdf_accent_color: business.pdf_accent_color || '#00AEEF',
     },
 
     influencer: {
       id: agreement.influencer_id,
-      legal_name: agreement.influencer_legal_name,
-      display_name: agreement.influencer_display_name,
-      instagram_username: agreement.influencer_instagram_username,
-      instagram_url: agreement.influencer_instagram_url,
-      email: agreement.influencer_email,
-      phone: agreement.influencer_phone,
-      address: agreement.influencer_address,
-      city: agreement.influencer_city,
-      state_code: agreement.influencer_state_code,
-      postal_code: agreement.influencer_postal_code,
-      country: agreement.influencer_country,
-      signatory_name: agreement.influencer_signatory_name || agreement.influencer_legal_name,
+      legal_name: agreement.influencer_legal_name || '',
+      display_name: agreement.influencer_display_name || '',
+      instagram_username: agreement.influencer_instagram_username || '',
+      instagram_url: agreement.influencer_instagram_url || '',
+      email: agreement.influencer_email || '',
+      phone: agreement.influencer_phone || '',
+      address: agreement.influencer_address || '',
+      city: agreement.influencer_city || '',
+      state_code: agreement.influencer_state_code || '',
+      postal_code: agreement.influencer_postal_code || '',
+      country: agreement.influencer_country || 'India',
+      signatory_name: agreement.influencer_signatory_name || agreement.influencer_legal_name || '',
     },
 
     illustrative_calculation: illustrativeCalculation,

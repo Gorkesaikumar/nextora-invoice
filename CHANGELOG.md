@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.7] - 2026-10-26
+
+### Fixed
+- **Influencer Contract Preview & Downloaded PDF Parity (Single Source of Truth)**:
+  - Fixed discrepancy between influencer contract preview and downloaded PDF across document structure, logos, metadata, deliverables, and calculations.
+  - Implemented authoritative `buildContractSnapshot` in `server/marketing.js` resolving base64 data URIs for company and Nextora POS product logos with SHA-256 integrity hashes.
+  - Enforced snapshot immutability for finalized contracts (`ACCEPTED`, `SIGNED`, `ACTIVE`, `TERMINATED`, `ARCHIVED`) so future logo or business setting changes do not alter historical documents.
+  - Added automatic cache invalidation (`snapshot = NULL`, `pdf_generated_at = NULL`) whenever draft agreements are edited.
+  - Rewrote `server/influencer-contract-template.js` into an exact 3-page paginated A4 layout (`.nc-a4-page`) matching `server/contract-pdf.js` page-for-page and line-for-line.
+  - Page 1 includes Header with dual logos (or text fallback), contract title, 4-column summary metadata box (`CONTRACT NUMBER`, `EFFECTIVE START DATE`, `REVENUE SHARE`, `GST TREATMENT`), Section 1 (Parties), Section 2 (Purpose), Section 3 (Scope of Work & Deliverables table), and Page 1 footer.
+  - Page 2 includes Running Header, Section 4 (Revenue sharing calculation table, calculation mechanics, and Telangana intra-state / interstate GST breakdown cards), Section 5 (Confidentiality), Section 6 (Representations & Warranties), and Page 2 footer.
+  - Page 3 includes Running Header, Section 7 (Payment schedule & TDS under 194H), Section 8 (Term & Termination), Section 9 (General Legal Provisions), Section 10 (Execution & Signature cards with disclaimer note), and Page 3 footer.
+  - Unified all endpoints (`preview`, `html`, `generate-pdf`, `pdf`) to consume the identical canonical snapshot.
+  - Updated frontend preview (`src/views/marketing.js`) to render the canonical HTML directly and display draft branding notices or sealed snapshot badges.
+
 ## [1.1.6] - 2026-10-26
 
 ### Fixed

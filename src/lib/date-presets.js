@@ -102,6 +102,13 @@ export function resolveDatePreset(presetKey, { baseDate = new Date(), customFrom
       break;
     }
 
+    case 'last_90_days': {
+      fromDate = toIsoDate(addDays(now, -89));
+      toDate = toIsoDate(now);
+      label = 'Last 90 days';
+      break;
+    }
+
     case 'this_quarter': {
       let qNum;
       let qStartM;
@@ -185,6 +192,7 @@ export const DATE_PRESETS = [
   { key: 'last_week', label: 'Last week' },
   { key: 'last_7_days', label: 'Last 7 days' },
   { key: 'last_30_days', label: 'Last 30 days' },
+  { key: 'last_90_days', label: 'Last 90 days' },
   { key: 'today', label: 'Today' },
   { key: 'yesterday', label: 'Yesterday' },
   { key: 'all_time', label: 'All available dates' },

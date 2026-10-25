@@ -46,7 +46,7 @@ function truncate(str, maxLen = 30) {
 }
 
 export async function renderReportPdf(section, data, options = {}) {
-  const isLandscape = ['invoices', 'collections', 'products', 'clients', 'receivables', 'tax', 'quotations'].includes(section);
+  const isLandscape = ['invoices', 'collections', 'products', 'clients', 'receivables', 'tax', 'quotations', 'monthly_revenue', 'influencers', 'influencer_sales', 'imports'].includes(section);
   const pageSize = isLandscape ? A4_LANDSCAPE : A4_PORTRAIT;
   const contentWidth = pageSize.width - MARGIN * 2;
 
@@ -75,6 +75,7 @@ export async function renderReportPdf(section, data, options = {}) {
   // Title configuration by section
   const TITLES = {
     overview: { title: 'BUSINESS OVERVIEW & SALES ANALYTICS', sub: 'Executive Financial Summary & Period Comparisons' },
+    monthly_revenue: { title: 'MONTHLY COMPANY REVENUE REPORT', sub: 'Month-by-Month Financial Turnover & Collection Reconciliation' },
     invoices: { title: 'INVOICE REGISTER REPORT', sub: 'Invoices Issued, Taxable Value, Tax Slabs, and Balances' },
     collections: { title: 'COLLECTIONS & CASH RECEIPTS REPORT', sub: 'Recorded Payments and Money Received on Invoices' },
     products: { title: 'PRODUCT & SERVICE SALES ANALYTICS', sub: 'Quantities Sold, Realized Pricing, Revenue & Sales Contribution' },
@@ -82,6 +83,9 @@ export async function renderReportPdf(section, data, options = {}) {
     receivables: { title: 'ACCOUNTS RECEIVABLE & AGEING REPORT', sub: 'Unpaid Invoices Grouped by Due Date & Aging Schedule' },
     tax: { title: 'GST TAX SUMMARY & LIABILITY REPORT', sub: 'HSN/SAC Classification, Tax Slabs, and Net Adjustment Notes' },
     quotations: { title: 'QUOTATION PERFORMANCE REPORT', sub: 'Estimate Pipeline, Acceptance Ratio, and Invoice Conversions' },
+    influencers: { title: 'INFLUENCER MARKETING PARTNERS REGISTER', sub: 'Partner Performance, Attributed Sales, Commission Earned and Payable' },
+    influencer_sales: { title: 'INFLUENCER SALES ATTRIBUTION DETAIL', sub: 'Individual Attributed Transactions, Products, and Commission Calculations' },
+    imports: { title: 'SALES EXCEL IMPORT BATCH AUDIT', sub: 'Import History, Record Counts, Gross Attributed Sales, and Commissions' },
     statement: { title: `CUSTOMER STATEMENT OF ACCOUNT`, sub: `Transaction Ledger & Reconciliation — ${data.client?.name || ''}` },
   };
 
@@ -390,6 +394,13 @@ export async function renderReportPdf(section, data, options = {}) {
         { label: 'Cancelled / Void', value: String(m.cancelled_count || 0), hint: `Excluded from revenue` },
       ]);
 
+      drawKpiCards([
+        { label: 'Quotation Pipeline', value: formatInr(m.quotations_issued?.current_value_minor || 0), hint: `${m.quotations_issued?.current || 0} quotes (${m.quotations_converted?.conversion_rate_pct || 0}% won)` },
+        { label: 'Units / Volume Sold', value: Number(m.units_sold?.current || 0).toLocaleString('en-IN'), hint: `${m.invoices_count?.current || 0} direct invoices` },
+        { label: 'Influencer Sales', value: formatInr(m.influencer_sales?.current || 0), hint: `${m.influencer_sales?.count || 0} attributed orders` },
+        { label: 'Influencer Comm Due', value: formatInr(m.influencer_commission_payable?.current || 0), alert: (m.influencer_commission_payable?.current || 0) > 0, hint: `Earned: ${formatInr(m.influencer_commission_earned?.current || 0)}` },
+      ]);
+
       currentPage.drawText('TOP PRODUCTS & SERVICES BY SALES', {
         x: MARGIN,
         y: currentY - 4,
@@ -426,6 +437,47 @@ export async function renderReportPdf(section, data, options = {}) {
           { key: 'invoiced', label: 'INVOICED AMOUNT', width: 163, align: 'right', bold: true, render: r => formatInr(r.invoiced_minor) },
         ],
         rows: data.top_clients || [],
+      });
+      break;
+    }
+
+    case 'monthly_revenue': {
+      const rows = data.rows || [];
+      const tot = data.totals || {};
+      drawKpiCards([
+        { label: 'Total Invoiced Sales', value: formatInr(tot.net_invoiced_minor), hint: `${tot.invoices_count || 0} direct invoices` },
+        { label: 'Collections Received', value: formatInr(tot.collected_minor), hint: `Net: ${formatInr(tot.net_collected_minor)}` },
+        { label: 'Receivables Balance', value: formatInr(tot.receivables_minor), alert: tot.receivables_minor > 0 },
+        { label: 'Influencer Sales', value: formatInr(tot.influencer_sales_minor), hint: `Attributed partner sales` },
+        { label: 'Partner Comm Payable', value: formatInr(tot.influencer_commission_payable_minor), alert: tot.influencer_commission_payable_minor > 0, hint: `Earned: ${formatInr(tot.influencer_commission_earned_minor)}` },
+      ]);
+
+      drawTable({
+        columns: [
+          { key: 'month_label', label: 'MONTH', width: 75, align: 'left', bold: true },
+          { key: 'invoices_count', label: 'INVS', width: 35, align: 'right', render: r => String(r.invoices_count || 0) },
+          { key: 'net_invoiced_minor', label: 'INVOICED', width: 75, align: 'right', bold: true, render: r => formatInr(r.net_invoiced_minor) },
+          { key: 'collected_minor', label: 'COLLECTIONS', width: 75, align: 'right', render: r => formatInr(r.collected_minor) },
+          { key: 'net_collected_minor', label: 'NET COLL', width: 75, align: 'right', render: r => formatInr(r.net_collected_minor) },
+          { key: 'receivables_minor', label: 'RECEIVABLES', width: 75, align: 'right', render: r => formatInr(r.receivables_minor) },
+          { key: 'influencer_sales_minor', label: 'INF SALES', width: 80, align: 'right', render: r => formatInr(r.influencer_sales_minor) },
+          { key: 'influencer_commission_earned_minor', label: 'COMM EARNED', width: 80, align: 'right', render: r => formatInr(r.influencer_commission_earned_minor) },
+          { key: 'influencer_commission_payable_minor', label: 'COMM DUE', width: 75, align: 'right', render: r => formatInr(r.influencer_commission_payable_minor) },
+          { key: 'growth_pct', label: 'MOM %', width: 55, align: 'right', render: r => (r.growth_pct !== null && r.growth_pct !== undefined ? `${r.growth_pct > 0 ? '+' : ''}${r.growth_pct}%` : '—') },
+        ],
+        rows,
+        totalsRow: {
+          month_label: `TOTAL (${rows.length})`,
+          invoices_count: String(tot.invoices_count || 0),
+          net_invoiced_minor: formatInr(tot.net_invoiced_minor),
+          collected_minor: formatInr(tot.collected_minor),
+          net_collected_minor: formatInr(tot.net_collected_minor),
+          receivables_minor: formatInr(tot.receivables_minor),
+          influencer_sales_minor: formatInr(tot.influencer_sales_minor),
+          influencer_commission_earned_minor: formatInr(tot.influencer_commission_earned_minor),
+          influencer_commission_payable_minor: formatInr(tot.influencer_commission_payable_minor),
+          growth_pct: '—',
+        },
       });
       break;
     }
@@ -541,7 +593,7 @@ export async function renderReportPdf(section, data, options = {}) {
 
       drawTable({
         columns: [
-          { key: 'client_name', label: 'CLIENT NAME', width: 130, align: 'left', bold: true, maxChars: 24 },
+          { key: 'client_name', label: 'CLIENT NAME', width: 130, align: 'left', bold: true, render: r => r.client_name || r.name || '—', maxChars: 24 },
           { key: 'company_name', label: 'COMPANY', width: 110, align: 'left', render: r => r.company_name || '—', maxChars: 20 },
           { key: 'gstin', label: 'GSTIN', width: 90, align: 'left', render: r => r.gstin || '—' },
           { key: 'invoice_count', label: 'INVS', width: 50, align: 'right', render: r => String(r.invoice_count || 0) },
@@ -717,6 +769,110 @@ export async function renderReportPdf(section, data, options = {}) {
         totalsRow: {
           quotation_number: 'DECIDED ACCEPTED VALUE',
           grand_total_minor: formatInr(data.decided_value_minor),
+        },
+      });
+      break;
+    }
+
+    case 'influencers': {
+      const rows = data.rows || [];
+      const tot = data.totals || {};
+      drawKpiCards([
+        { label: 'Active Partners', value: String(rows.length), hint: 'Marketing agreements' },
+        { label: 'Attributed Sales', value: formatInr(tot.attributed_sales_minor), hint: 'Total gross sales' },
+        { label: 'Commission Earned', value: formatInr(tot.commission_earned_minor) },
+        { label: 'Commission Paid', value: formatInr(tot.commission_paid_minor) },
+        { label: 'Commission Payable', value: formatInr(tot.commission_payable_minor), alert: tot.commission_payable_minor > 0 },
+      ]);
+
+      drawTable({
+        columns: [
+          { key: 'legal_name', label: 'PARTNER NAME', width: 130, align: 'left', bold: true, render: r => r.display_name || r.legal_name || '—', maxChars: 22 },
+          { key: 'handle', label: 'HANDLE / CODE', width: 75, align: 'left', render: r => r.handle || '—' },
+          { key: 'contract_number', label: 'CONTRACT #', width: 85, align: 'left', render: r => r.contract_number || '—' },
+          { key: 'commission_rate_bp', label: 'RATE %', width: 45, align: 'right', render: r => `${((Number(r.commission_rate_bp || 0) / 100)).toFixed(1)}%` },
+          { key: 'sales_count', label: 'ORDERS', width: 45, align: 'right', render: r => String(r.sales_count || 0) },
+          { key: 'attributed_sales_minor', label: 'GROSS SALES', width: 85, align: 'right', bold: true, render: r => formatInr(r.attributed_sales_minor) },
+          { key: 'eligible_revenue_minor', label: 'ELIGIBLE REV', width: 85, align: 'right', render: r => formatInr(r.eligible_revenue_minor) },
+          { key: 'commission_earned_minor', label: 'COMM EARNED', width: 75, align: 'right', render: r => formatInr(r.commission_earned_minor) },
+          { key: 'commission_paid_minor', label: 'PAID', width: 70, align: 'right', render: r => formatInr(r.commission_paid_minor) },
+          { key: 'commission_payable_minor', label: 'PAYABLE', width: 75, align: 'right', bold: true, render: r => formatInr(r.commission_payable_minor) },
+        ],
+        rows,
+        totalsRow: {
+          legal_name: `TOTAL (${rows.length})`,
+          sales_count: String(tot.sales_count || 0),
+          attributed_sales_minor: formatInr(tot.attributed_sales_minor),
+          eligible_revenue_minor: formatInr(tot.eligible_revenue_minor),
+          commission_earned_minor: formatInr(tot.commission_earned_minor),
+          commission_paid_minor: formatInr(tot.commission_paid_minor),
+          commission_payable_minor: formatInr(tot.commission_payable_minor),
+        },
+      });
+      break;
+    }
+
+    case 'influencer_sales': {
+      const rows = data.rows || [];
+      const tot = data.totals || {};
+      drawKpiCards([
+        { label: 'Attributed Orders', value: String(rows.length), hint: 'Recorded sales' },
+        { label: 'Gross Sales Value', value: formatInr(tot.sale_amount_minor) },
+        { label: 'Eligible Revenue', value: formatInr(tot.eligible_revenue_minor) },
+        { label: 'Total Commission', value: formatInr(tot.commission_minor) },
+      ]);
+
+      drawTable({
+        columns: [
+          { key: 'sale_date', label: 'DATE', width: 60, align: 'left', render: r => formatDate(r.sale_date) },
+          { key: 'customer_name', label: 'CUSTOMER', width: 110, align: 'left', render: r => r.customer_name || 'POS Customer', maxChars: 18 },
+          { key: 'product_name', label: 'PRODUCT', width: 120, align: 'left', render: r => r.product_name || 'Item', maxChars: 20 },
+          { key: 'influencer_name', label: 'PARTNER', width: 105, align: 'left', bold: true, render: r => r.influencer_name || '—', maxChars: 18 },
+          { key: 'sale_amount_minor', label: 'SALE AMT', width: 75, align: 'right', bold: true, render: r => formatInr(r.sale_amount_minor) },
+          { key: 'eligible_revenue_minor', label: 'ELIGIBLE', width: 75, align: 'right', render: r => formatInr(r.eligible_revenue_minor) },
+          { key: 'commission_rate_bp', label: 'RATE %', width: 45, align: 'right', render: r => `${((Number(r.commission_rate_bp || 0) / 100)).toFixed(1)}%` },
+          { key: 'commission_minor', label: 'COMMISSION', width: 75, align: 'right', bold: true, render: r => formatInr(r.commission_minor) },
+          { key: 'payment_status', label: 'STATUS', width: 60, align: 'center', render: r => r.payment_status || 'PENDING' },
+        ],
+        rows,
+        totalsRow: {
+          sale_date: `TOTAL (${rows.length})`,
+          sale_amount_minor: formatInr(tot.sale_amount_minor),
+          eligible_revenue_minor: formatInr(tot.eligible_revenue_minor),
+          commission_minor: formatInr(tot.commission_minor),
+        },
+      });
+      break;
+    }
+
+    case 'imports': {
+      const rows = data.rows || [];
+      const tot = data.totals || {};
+      drawKpiCards([
+        { label: 'Total Batches', value: String(rows.length), hint: 'Excel imports' },
+        { label: 'Valid Records', value: String(tot.valid_count || 0) },
+        { label: 'Attributed Sales', value: formatInr(tot.total_sales_minor) },
+        { label: 'Total Commission', value: formatInr(tot.total_commission_minor) },
+      ]);
+
+      drawTable({
+        columns: [
+          { key: 'id', label: 'BATCH ID', width: 55, align: 'left', bold: true },
+          { key: 'imported_at', label: 'IMPORTED AT', width: 85, align: 'left', render: r => formatDate(r.imported_at) },
+          { key: 'filename', label: 'SOURCE FILE', width: 200, align: 'left', render: r => r.filename || '—', maxChars: 34 },
+          { key: 'row_count', label: 'ROWS', width: 50, align: 'right', render: r => String(r.row_count || 0) },
+          { key: 'valid_count', label: 'VALID', width: 50, align: 'right', render: r => String(r.valid_count || 0) },
+          { key: 'total_sales_minor', label: 'TOTAL SALES', width: 100, align: 'right', bold: true, render: r => formatInr(r.total_sales_minor) },
+          { key: 'total_commission_minor', label: 'COMMISSION', width: 90, align: 'right', bold: true, render: r => formatInr(r.total_commission_minor) },
+          { key: 'status', label: 'STATUS', width: 70, align: 'center', render: r => r.status || 'COMPLETED' },
+        ],
+        rows,
+        totalsRow: {
+          id: `TOTAL (${rows.length})`,
+          row_count: String(tot.row_count || 0),
+          valid_count: String(tot.valid_count || 0),
+          total_sales_minor: formatInr(tot.total_sales_minor),
+          total_commission_minor: formatInr(tot.total_commission_minor),
         },
       });
       break;

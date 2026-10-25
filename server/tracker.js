@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { assert, DEFAULT_COLUMNS } from './domain.js';
+import { assert, HttpError, DEFAULT_COLUMNS } from './domain.js';
 import { audit } from './audit.js';
 import { canWrite } from './auth.js';
 import { pagination, searchTerm } from './service.js';
@@ -61,7 +61,7 @@ export async function columnCatalog(db) {
     custom_fields: custom.map(field => ({ id: field.id, label: field.label, field_type: field.field_type,
       description: field.description, required: field.required, options: field.options,
       default_value: field.default_value, position: field.position, visible: field.visible,
-      width: field.width, editor_roles: field.editor_roles })),
+      width: field.width, editor_roles: field.editor_roles, status: field.status })),
   };
 }
 
@@ -408,16 +408,76 @@ export async function updateSubscription(db, actor, id, input) {
     const existing = (await tx.query('SELECT * FROM inv.pos_subscriptions WHERE id=$1 FOR UPDATE', [id])).rows[0];
     assert(existing, 404, 'That subscription does not exist.', 'NOT_FOUND');
     const isLifetime = input.is_lifetime;
-    assert(isLifetime || input.expiry_date, 400, 'Provide an expiry date, or mark the plan as lifetime.', 'VALIDATION_ERROR');
+
+    // Derive expiry from plan duration if not lifetime and not provided
+    let expiry = input.expiry_date;
+    let planLabel = input.plan_label || existing.plan_label;
+    if (input.plan_id) {
+      const plan = (await tx.query('SELECT duration_months, label FROM inv.pos_subscription_plans WHERE id=$1', [input.plan_id])).rows[0];
+      if (plan) {
+        if (!planLabel) planLabel = plan.label;
+        if (!isLifetime && !expiry && plan.duration_months > 0) {
+          const start = input.start_date || input.purchase_date;
+          const date = new Date(`${start}T00:00:00Z`);
+          date.setUTCMonth(date.getUTCMonth() + plan.duration_months);
+          expiry = date.toISOString().slice(0, 10);
+        }
+      }
+    }
+    assert(isLifetime || expiry, 400, 'Provide an expiry date, or mark the plan as lifetime.', 'VALIDATION_ERROR');
+
+    // Protect financial facts if linked to an issued invoice
+    let amountMinor = input.amount_minor;
+    let txRef = input.transaction_reference;
+    if (existing.invoice_id) {
+      amountMinor = existing.amount_minor;
+      txRef = existing.transaction_reference;
+    }
+
     await tx.query(`UPDATE inv.pos_subscriptions SET product_id=$2, plan_id=$3, plan_label=$4, purchase_date=$5,
         start_date=$6, expiry_date=$7, is_lifetime=$8, status=$9, amount_minor=$10, transaction_reference=$11,
         notes=$12, updated_at=now() WHERE id=$1`,
-    [id, input.product_id, input.plan_id, input.plan_label || existing.plan_label, input.purchase_date,
-      input.start_date || input.purchase_date, isLifetime ? null : input.expiry_date, isLifetime, input.status,
-      input.amount_minor, input.transaction_reference, input.notes]);
+    [id, input.product_id, input.plan_id, planLabel, input.purchase_date,
+      input.start_date || input.purchase_date, isLifetime ? null : expiry, isLifetime, input.status,
+      amountMinor, txRef, input.notes]);
+
+    await tx.query('UPDATE inv.pos_customers SET updated_at=now() WHERE id=$1', [existing.customer_id]);
+
     await audit(tx, 'SUBSCRIPTION_UPDATED', { actorId: actor.id, entityType: 'POS_SUBSCRIPTION', entityId: id,
       metadata: { customer_id: existing.customer_id } });
     return (await tx.query('SELECT * FROM inv.pos_subscriptions WHERE id=$1', [id])).rows[0];
+  });
+}
+
+export async function deleteSubscription(db, actor, id) {
+  return db.transaction(async tx => {
+    const existing = (await tx.query('SELECT * FROM inv.pos_subscriptions WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    assert(existing, 404, 'That subscription does not exist.', 'NOT_FOUND');
+
+    if (existing.invoice_id) {
+      throw new HttpError(409,
+        'This purchase cannot be deleted because it is linked to an issued invoice. Financial records cannot be removed.',
+        'PURCHASE_PROTECTED');
+    }
+
+    const renewalDependency = (await tx.query(
+      'SELECT count(*)::int AS total FROM inv.pos_subscriptions WHERE renewed_from=$1', [id]
+    )).rows[0].total;
+    if (renewalDependency > 0) {
+      throw new HttpError(409,
+        'This purchase cannot be deleted because subsequent renewal records depend on it.',
+        'RENEWAL_DEPENDENCY');
+    }
+
+    await tx.query('DELETE FROM inv.pos_subscriptions WHERE id=$1', [id]);
+    await tx.query('UPDATE inv.pos_customers SET updated_at=now() WHERE id=$1', [existing.customer_id]);
+
+    await audit(tx, 'SUBSCRIPTION_DELETED', {
+      actorId: actor.id, entityType: 'POS_SUBSCRIPTION', entityId: id,
+      metadata: { customer_id: existing.customer_id, plan_label: existing.plan_label }
+    });
+
+    return { deleted: true, id, customer_id: existing.customer_id };
   });
 }
 
@@ -629,10 +689,14 @@ export async function updateCustomer(db, actor, id, input) {
       assert(employee, 404, 'That employee does not exist.', 'NOT_FOUND');
     }
     const nextUpdated = new Date(Math.max(Date.now(), new Date(existing.updated_at).getTime() + 1));
+    const nextStatus = input.status || existing.status;
+    const nextArchivedAt = nextStatus === 'ARCHIVED' ? (existing.archived_at || new Date()) : null;
+
     await tx.query(`UPDATE inv.pos_customers SET name=$2, business_name=$3, address=$4, employee_id=$5, email=$6,
-        phone=$7, remarks=$8, client_id=$9, updated_at=$10 WHERE id=$1`,
+        phone=$7, remarks=$8, client_id=$9, status=$11, archived_at=$12, updated_at=$10 WHERE id=$1`,
     [id, input.name, input.business_name, input.address, input.employee_id, input.email, input.phone,
-      input.remarks, input.client_id, nextUpdated]);
+      input.remarks, input.client_id, nextUpdated, nextStatus, nextArchivedAt]);
+
     if (input.subscription) {
       const current = (await tx.query(`SELECT id FROM inv.pos_subscriptions WHERE customer_id=$1
         ORDER BY (status='ACTIVE') DESC, purchase_date DESC, created_at DESC LIMIT 1`, [id])).rows[0];
@@ -649,10 +713,82 @@ export async function updateCustomer(db, actor, id, input) {
         await insertSubscription(tx, actor, id, input.subscription);
       }
     }
+
+    if (Array.isArray(input.custom_values) && input.custom_values.length > 0) {
+      for (const entry of input.custom_values) {
+        const definition = (await tx.query(
+          "SELECT * FROM inv.custom_field_definitions WHERE id=$1 AND entity='POS_CUSTOMER'",
+          [entry.definition_id]
+        )).rows[0];
+        if (!definition || definition.status !== 'ACTIVE') continue;
+        const val = normalizeFieldValue({ ...definition, options: definition.options || [] }, entry.value);
+        if (val === '') {
+          await tx.query('DELETE FROM inv.custom_field_values WHERE definition_id=$1 AND customer_id=$2', [definition.id, id]);
+        } else {
+          await tx.query(`INSERT INTO inv.custom_field_values(definition_id,customer_id,value,updated_by)
+            VALUES($1,$2,$3,$4) ON CONFLICT (definition_id,customer_id)
+            DO UPDATE SET value=EXCLUDED.value, updated_at=now(), updated_by=EXCLUDED.updated_by`,
+          [definition.id, id, val, actor.id]);
+        }
+      }
+    }
+
     await audit(tx, 'CUSTOMER_UPDATED', { actorId: actor.id, entityType: 'POS_CUSTOMER', entityId: id,
       metadata: { name: input.name, subscription_touched: Boolean(input.subscription) } });
   });
   return getCustomer(db, id);
+}
+
+export async function deleteCustomer(db, actor, id) {
+  return db.transaction(async tx => {
+    const existing = (await tx.query('SELECT * FROM inv.pos_customers WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    assert(existing, 404, 'That customer does not exist.', 'NOT_FOUND');
+
+    // Financial safeguards:
+    // 1. Check subscriptions linked to issued invoices
+    const linkedInvoiceSub = (await tx.query(
+      'SELECT count(*)::int AS total FROM inv.pos_subscriptions WHERE customer_id=$1 AND invoice_id IS NOT NULL',
+      [id]
+    )).rows[0].total;
+
+    // 2. Check billing client links to issued invoices or recorded payments
+    let linkedInvoices = 0;
+    let linkedPayments = 0;
+    if (existing.client_id) {
+      linkedInvoices = (await tx.query(
+        "SELECT count(*)::int AS total FROM inv.invoices WHERE client_id=$1 AND status='ISSUED'",
+        [existing.client_id]
+      )).rows[0].total;
+      linkedPayments = (await tx.query(
+        "SELECT count(*)::int AS total FROM inv.payments p JOIN inv.invoices i ON i.id=p.invoice_id WHERE i.client_id=$1",
+        [existing.client_id]
+      )).rows[0].total;
+    }
+
+    if (linkedInvoiceSub > 0 || linkedInvoices > 0 || linkedPayments > 0) {
+      const reasons = [];
+      if (linkedInvoiceSub > 0) reasons.push(`${linkedInvoiceSub} subscription(s) linked to issued invoices`);
+      if (linkedInvoices > 0) reasons.push(`${linkedInvoices} issued invoice(s)`);
+      if (linkedPayments > 0) reasons.push(`${linkedPayments} recorded payment(s)`);
+      throw new HttpError(409,
+        `This customer cannot be permanently deleted because they have associated financial records (${reasons.join(', ')}). Please archive the customer instead.`,
+        'CUSTOMER_PROTECTED');
+    }
+
+    // Clean up dependent tracker tables:
+    await tx.query('DELETE FROM inv.pos_share_customers WHERE customer_id=$1', [id]);
+    await tx.query('DELETE FROM inv.custom_field_values WHERE customer_id=$1', [id]);
+    await tx.query('UPDATE inv.pos_subscriptions SET renewed_from=NULL WHERE customer_id=$1', [id]);
+    await tx.query('DELETE FROM inv.pos_subscriptions WHERE customer_id=$1', [id]);
+    await tx.query('DELETE FROM inv.pos_customers WHERE id=$1', [id]);
+
+    await audit(tx, 'CUSTOMER_DELETED', {
+      actorId: actor.id, entityType: 'POS_CUSTOMER', entityId: id,
+      metadata: { name: existing.name, business_name: existing.business_name }
+    });
+
+    return { deleted: true, id, name: existing.name };
+  });
 }
 
 export async function setCustomerStatus(db, actor, id, status) {
