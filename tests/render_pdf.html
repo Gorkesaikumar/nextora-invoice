@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PDF Page Renderer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    body { margin: 0; background: #e2e8f0; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+    .page-wrapper { margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); background: #ffffff; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="status">Loading PDF...</div>
+  <div id="pages-container"></div>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    window.renderPdfBase64 = async function(base64Data) {
+      try {
+        const raw = atob(base64Data);
+        const uint8Array = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) {
+          uint8Array[i] = raw.charCodeAt(i);
+        }
+        const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
+        const pdf = await loadingTask.promise;
+        const container = document.getElementById('pages-container');
+        container.innerHTML = '';
+        
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 2.0 }); // 2x high DPI
+          
+          const wrapper = document.createElement('div');
+          wrapper.className = 'page-wrapper';
+          wrapper.id = 'wrapper-' + pageNum;
+
+          const canvas = document.createElement('canvas');
+          canvas.id = 'canvas-page-' + pageNum;
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          wrapper.appendChild(canvas);
+          container.appendChild(wrapper);
+
+          const context = canvas.getContext('2d');
+          await page.render({ canvasContext: context, viewport }).promise;
+        }
+        document.getElementById('status').textContent = 'Rendered ' + pdf.numPages + ' pages';
+        return { success: true, numPages: pdf.numPages };
+      } catch (err) {
+        document.getElementById('status').textContent = 'Error: ' + err.message;
+        return { success: false, error: err.message };
+      }
+    };
+  </script>
+</body>
+</html>

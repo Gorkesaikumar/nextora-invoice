@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.6] - 2026-10-26
+
+### Fixed
+- **Reports Export PDF Button Icon Rendering**:
+  - Replaced unmapped ligature `file-text` in `src/views/reports.js` with `picture_as_pdf`.
+  - Added inline SVG definitions to `SVG_ICONS` in `src/lib/ui.js` for `picture_as_pdf`, `file-text`, `file_text`, and `loyalty`, preventing raw text fallback (`FILE-TEXT`).
+  - Preserved accessible name `Export PDF`, styling, alignment, and CSV export functionality.
+- **Software Services Contract Preview & Downloaded PDF Parity (`NC/SDA/2026-27/0001`)**:
+  - Upgraded Page 1 in `server/software-contract-pdf.js` to draw the canonical centered layout matching the on-screen preview.
+  - Centered company logo, centered company name (`NEXTORA CREATIONS`), address, contact information, and GSTIN/State.
+  - Added centered 4-pill metadata row (`CONTRACT NUMBER`, `DATE`, `STATUS`, `CATEGORY`).
+  - Added full-width divider line and styled title banner with left accent stripe.
+  - Added 4-column summary metadata card grid (Project Title, Timeline, Support, Status).
+  - Maintained all 10 canonical sections, Schedule A feature tables, GST calculations, and multi-page continuity.
+- **Client Archival and Delete Functionality**:
+  - Restored `api.del` in `src/lib/api.js` (resolving `h.del is not a function`).
+  - Implemented intelligent archival and safety deletion in `src/views/clients.js`.
+
+### Added
+- **Playwright End-to-End Verification Suite**:
+  - Automated Chromium test suite (`tests/run_playwright_verification.py`) validating Reports button rendering, contract preview vs download parity, visual comparison, and zero browser console errors.
+
 ## [1.1.5] - 2026-10-26
 
 ### Fixed

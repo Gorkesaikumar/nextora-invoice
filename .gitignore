@@ -50,6 +50,7 @@ pnpm-debug.log*
 *.old
 tmp/
 test-results/
+tests/playwright_artifacts/
 .freebuff/
 
 # -----------------------------------------------------------------------------

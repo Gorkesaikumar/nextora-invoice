@@ -346,7 +346,7 @@ export const render = async (container, params, ctx) => {
 
   const exportActions = `
     <div class="flex items-center gap-2">
-      ${button({ label: 'Export PDF', action: 'pdf', icon: 'file-text', variant: 'primary' })}
+      ${button({ label: 'Export PDF', action: 'pdf', icon: 'picture_as_pdf', variant: 'primary' })}
       ${button({ label: 'Export CSV', action: 'csv', icon: 'download' })}
     </div>
   `;
@@ -504,7 +504,7 @@ export const render = async (container, params, ctx) => {
           </div>
         `,
         footer: `
-          ${button({ label: 'Export Statement PDF', action: 'export-statement-pdf', attributes: `data-client-id="${clientId}"`, icon: 'file-text', variant: 'primary' })}
+          ${button({ label: 'Export Statement PDF', action: 'export-statement-pdf', attributes: `data-client-id="${clientId}"`, icon: 'picture_as_pdf', variant: 'primary' })}
           ${button({ label: 'Export Statement CSV', action: 'export-statement-csv', attributes: `data-client-id="${clientId}"`, icon: 'download' })}
           ${button({ label: 'Close', action: 'close-modal' })}
         `,

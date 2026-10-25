@@ -176,95 +176,121 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null, 
   // --- Start Page 1 ---
   addPage();
 
-  // Primary Header
-  const headerTop = y;
-  let leftHeaderBottom = headerTop;
-  let rightHeaderBottom = headerTop;
-
-  // Company Logo or Text
+  // Primary Header: Centered layout matching canonical preview (Phase 3 & 4)
   if (companyLogoImg) {
     const scaled = companyLogoImg.scaleToFit(140, 48);
+    const logoX = (A4.width - scaled.width) / 2;
     page.drawImage(companyLogoImg, {
-      x: MARGIN, y: headerTop - scaled.height, width: scaled.width, height: scaled.height,
+      x: logoX, y: y - scaled.height, width: scaled.width, height: scaled.height,
     });
-    leftHeaderBottom = headerTop - scaled.height - 6;
-  } else {
-    page.drawText(snapshot.business?.business_name || 'NEXTORA CREATIONS', {
-      x: MARGIN, y: headerTop - 14, size: 14, font: bold, color: INK,
-    });
-    leftHeaderBottom = headerTop - 20;
+    y -= scaled.height + 8;
   }
 
-  // Business contact details on left
-  let bTop = leftHeaderBottom;
+  // Company Name & Legal Identity (Centered)
+  const compName = (snapshot.business?.business_name || 'NEXTORA CREATIONS').toUpperCase();
+  const nameW = bold.widthOfTextAtSize(compName, 13);
+  page.drawText(compName, {
+    x: (A4.width - nameW) / 2, y: y - 12, size: 13, font: bold, color: INK,
+  });
+  y -= 15;
+
   if (snapshot.business?.legal_name && snapshot.business.legal_name !== snapshot.business.business_name) {
-    bTop = drawText(snapshot.business.legal_name, MARGIN, bTop, 8, false, MUTED, 250);
-  }
-  if (snapshot.business?.address) {
-    bTop = drawText(snapshot.business.address, MARGIN, bTop, 7.5, false, MUTED, 250);
-  }
-  const busContact = [
-    snapshot.business?.phone || '7674981970',
-    snapshot.business?.website || 'https://nextoracreations.co.in/',
-    snapshot.business?.email,
-  ].filter(Boolean).join(' · ');
-  if (busContact) {
-    bTop = drawText(busContact, MARGIN, bTop, 7.5, false, MUTED, 250);
-  }
-  if (snapshot.business?.gstin) {
-    bTop = drawText(`GSTIN: ${snapshot.business.gstin}`, MARGIN, bTop, 7.5, true, MUTED, 250);
-  }
-
-  // Contract Identity on Right
-  const rightX = A4.width - MARGIN - 180;
-  let rTop = headerTop - 2;
-
-  if (productLogoImg) {
-    const scaledP = productLogoImg.scaleToFit(130, 32);
-    page.drawImage(productLogoImg, {
-      x: A4.width - MARGIN - scaledP.width,
-      y: rTop - scaledP.height,
-      width: scaledP.width,
-      height: scaledP.height,
+    const lName = snapshot.business.legal_name;
+    const lW = font.widthOfTextAtSize(lName, 8);
+    page.drawText(lName, {
+      x: (A4.width - lW) / 2, y: y - 8, size: 8, font, color: MUTED,
     });
-    rTop -= (scaledP.height + 6);
+    y -= 11;
   }
 
-  page.drawRectangle({
-    x: rightX, y: rTop - 45, width: 180, height: 45,
-    color: SOFT_BG, borderWidth: 0.5, borderColor: LINE,
+  const addr = snapshot.business?.address || 'Hyderabad, Telangana, India';
+  const addrW = font.widthOfTextAtSize(addr, 7.5);
+  page.drawText(addr, {
+    x: (A4.width - addrW) / 2, y: y - 8, size: 7.5, font, color: MUTED,
   });
-  page.drawText('CONTRACT NUMBER', { x: rightX + 8, y: rTop - 12, size: 6.5, font: bold, color: MUTED });
-  page.drawText(snapshot.contract_number, { x: rightX + 8, y: rTop - 24, size: 9, font: bold, color: INK });
-  page.drawText(`Date: ${formatDate(snapshot.project?.start_date || snapshot.created_at)} · Status: ${snapshot.status}`, {
-    x: rightX + 8, y: rTop - 36, size: 6.5, font, color: MUTED,
-  });
-  rightHeaderBottom = rTop - 52;
+  y -= 11;
 
-  // Position below both headers
-  y = Math.min(bTop, rightHeaderBottom) - 14;
+  const busContact = [
+    snapshot.business?.phone ? `Phone: ${snapshot.business.phone}` : 'Phone: 7674981970',
+    snapshot.business?.website ? `Web: ${snapshot.business.website}` : 'Web: https://nextoracreations.co.in/',
+    snapshot.business?.email ? `Email: ${snapshot.business.email}` : null,
+  ].filter(Boolean).join('  ·  ');
+  if (busContact) {
+    const cW = font.widthOfTextAtSize(busContact, 7.5);
+    page.drawText(busContact, {
+      x: (A4.width - cW) / 2, y: y - 8, size: 7.5, font, color: MUTED,
+    });
+    y -= 11;
+  }
+
+  const taxLine = `GSTIN: ${snapshot.business?.gstin || '36JTAPK9167A1ZK'}  ·  State: Telangana (${snapshot.business?.state_code || '36'})`;
+  const tW = font.widthOfTextAtSize(taxLine, 7.5);
+  page.drawText(taxLine, {
+    x: (A4.width - tW) / 2, y: y - 8, size: 7.5, font: bold, color: MUTED,
+  });
+  y -= 14;
+
+  // Metadata Supporting Row (4 Centered Pills)
+  const pills = [
+    { label: 'CONTRACT NUMBER:', val: snapshot.contract_number },
+    { label: 'DATE:', val: formatDate(snapshot.project?.start_date || snapshot.created_at) },
+    { label: 'STATUS:', val: snapshot.status },
+    { label: 'CATEGORY:', val: snapshot.service_category },
+  ];
+  const pillGap = 8;
+  const pillH = 15;
+  const measuredPills = pills.map(p => {
+    const lW = bold.widthOfTextAtSize(p.label, 6.5);
+    const vW = bold.widthOfTextAtSize(p.val, 7);
+    const w = lW + 4 + vW + 12;
+    return { ...p, lW, vW, w };
+  });
+  const totalPillWidth = measuredPills.reduce((sum, p) => sum + p.w, 0) + (measuredPills.length - 1) * pillGap;
+  let currPillX = (A4.width - totalPillWidth) / 2;
+  measuredPills.forEach(p => {
+    page.drawRectangle({
+      x: currPillX, y: y - pillH, width: p.w, height: pillH,
+      color: SOFT_BG, borderWidth: 0.5, borderColor: LINE,
+    });
+    page.drawText(p.label, {
+      x: currPillX + 6, y: y - pillH + 4.5, size: 6.5, font: bold, color: MUTED,
+    });
+    page.drawText(p.val, {
+      x: currPillX + 6 + p.lW + 4, y: y - pillH + 4.5, size: 7, font: bold, color: INK,
+    });
+    currPillX += p.w + pillGap;
+  });
+  y -= (pillH + 10);
+
+  // Full-width Header Divider
   page.drawLine({
     start: { x: MARGIN, y },
     end: { x: A4.width - MARGIN, y },
     thickness: 1,
     color: LINE,
   });
-  y -= 16;
+  y -= 12;
 
-  // Document Title Banner
+  // Document Title Banner (Left Accent Stripe)
+  const bannerH = 28;
   page.drawRectangle({
-    x: MARGIN, y: y - 32, width: CONTENT_WIDTH, height: 32, color: SOFT_BG,
+    x: MARGIN, y: y - bannerH, width: CONTENT_WIDTH, height: bannerH,
+    color: SOFT_BG, borderWidth: 0.5, borderColor: LINE,
+  });
+  page.drawRectangle({
+    x: MARGIN, y: y - bannerH, width: 3.5, height: bannerH,
+    color: accent,
   });
   page.drawText('SOFTWARE DEVELOPMENT SERVICES AGREEMENT', {
-    x: MARGIN + 12, y: y - 18, size: 11, font: bold, color: INK,
+    x: MARGIN + 10, y: y - 11, size: 9.5, font: bold, color: INK,
   });
-  page.drawText(`Service Category: ${snapshot.service_category} · Engagement Title: ${snapshot.title}`, {
-    x: MARGIN + 12, y: y - 27, size: 8, font, color: MUTED,
+  page.drawText(`Service Category: ${snapshot.service_category}  ·  Engagement Title: ${snapshot.title}`, {
+    x: MARGIN + 10, y: y - 22, size: 7.5, font, color: MUTED,
   });
-  y -= 44;
+  y -= (bannerH + 10);
 
-  // Metadata Box
-  const metaBoxHeight = 44;
+  // Metadata Box (4 Columns)
+  const metaBoxHeight = 38;
   page.drawRectangle({
     x: MARGIN, y: y - metaBoxHeight, width: CONTENT_WIDTH, height: metaBoxHeight,
     borderWidth: 0.5, borderColor: LINE, color: rgb(1, 1, 1),
@@ -276,15 +302,28 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null, 
     { label: 'FREE SUPPORT', value: `${snapshot.support_and_maintenance?.free_support_months ?? 3} Months Included` },
     { label: 'CONTRACT STATUS', value: snapshot.status },
   ];
+  for (let i = 1; i < 4; i++) {
+    page.drawLine({
+      start: { x: MARGIN + i * colW, y },
+      end: { x: MARGIN + i * colW, y: y - metaBoxHeight },
+      thickness: 0.5,
+      color: LINE,
+    });
+  }
   metaItems.forEach((item, idx) => {
     const mX = MARGIN + idx * colW + 8;
-    page.drawText(item.label, { x: mX, y: y - 14, size: 6.5, font: bold, color: MUTED });
-    const valText = font.widthOfTextAtSize(item.value, 8) > colW - 12
-      ? item.value.slice(0, 22) + '...'
-      : item.value;
-    page.drawText(valText, { x: mX, y: y - 28, size: 8, font: bold, color: INK });
+    page.drawText(item.label, { x: mX, y: y - 13, size: 6.5, font: bold, color: MUTED });
+    const maxValW = colW - 16;
+    let valText = item.value;
+    if (font.widthOfTextAtSize(valText, 8) > maxValW) {
+      while (valText.length > 3 && font.widthOfTextAtSize(valText + '...', 8) > maxValW) {
+        valText = valText.slice(0, -1);
+      }
+      valText += '...';
+    }
+    page.drawText(valText, { x: mX, y: y - 26, size: 8, font: bold, color: INK });
   });
-  y -= metaBoxHeight + 14;
+  y -= (metaBoxHeight + 14);
 
   // --- SECTION 1: PARTIES ---
   const s1Intro = snapshot.clauses?.section_1_parties || '';
