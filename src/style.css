@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  /* The website's focus treatment: a cyan outline with an offset. */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid #00AEEF !important;
+    outline-offset: 2px !important;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer components {
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    font-size: 20px;
+    line-height: 1;
+    user-select: none;
+  }
+
+  .label-technical {
+    @apply font-mono text-label-technical uppercase text-on-surface-variant;
+  }
+
+  .field {
+    @apply w-full border-outline bg-surface px-3 py-2 text-sm text-on-surface outline-none
+      transition-colors focus:border-cyan-accent disabled:bg-surface-dim disabled:text-on-surface-variant;
+  }
+
+  .data-table th {
+    @apply label-technical border-b border-outline py-2.5 pr-4 text-left align-bottom font-mono first:pl-5 last:pr-5;
+  }
+
+  .data-table td {
+    @apply border-b border-outline py-3 pr-4 align-top text-sm first:pl-5 last:pr-5;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-surface-dim;
+  }
+
+  .num {
+    @apply font-mono tabular-nums;
+  }
+}
+
+/* Scrollbars stay understated against the white surface. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #dcd9d9; border: 3px solid #ffffff; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #c7c4d8; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ------------------------------------------------------------------ printing */
+
+@media print {
+  /* Only the document sheet is printed: no navigation, no editor controls. */
+  body > *:not(#print-root) { display: none !important; }
+  #print-root { display: block !important; }
+  @page { size: A4; margin: 14mm; }
+  .print-sheet { box-shadow: none !important; margin: 0 !important; width: auto !important; }
+  .print-hidden { display: none !important; }
+}
+
+@page { size: A4; margin: 14mm; }

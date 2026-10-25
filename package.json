@@ -1,0 +1,102 @@
+{
+  "name": "nextora-invoicing",
+  "version": "1.1.2",
+  "private": true,
+  "description": "Invoice & Quotation Generator for Nextora Creations",
+  "author": "Nextora Creations",
+  "type": "module",
+  "main": "electron/main.js",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:web": "vite",
+    "dev:api": "node --env-file-if-exists=.env server/local.js",
+    "dev:desktop": "node scripts/desktop-dev.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "pack:desktop": "npm run build && electron-builder --dir",
+    "smoke:desktop": "electron scripts/desktop-smoke.mjs",
+    "build:desktop": "npm run build && electron-builder --win nsis --x64",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.js",
+    "owner:create": "node --env-file-if-exists=.env scripts/create-owner.js",
+    "test": "node scripts/test.js",
+    "test:postgres": "node scripts/test.js --postgres",
+    "test:unit": "node --test tests/money.test.js tests/gst.test.js tests/words.test.js tests/sqlite-dialect.test.js",
+    "build:functions": "netlify functions:build --src netlify/functions --functions .netlify/functions-build"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1",
+    "pg": "^8.23.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/container-queries": "^0.1.1",
+    "@tailwindcss/forms": "^0.5.11",
+    "autoprefixer": "^10.5.4",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "postcss": "^8.5.22",
+    "tailwindcss": "^3.4.19",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "co.nextoracreations.invoicing",
+    "productName": "Nextora Invoice Generator",
+    "copyright": "Copyright © Nextora Creations",
+    "asar": true,
+    "asarUnpack": [
+      "server/assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "server/assets",
+        "to": "assets",
+        "filter": [
+          "*.ttf",
+          "*.txt"
+        ]
+      }
+    ],
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*",
+      "scripts/migrate.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nextora Invoicing"
+    }
+  },
+  "allowScripts": {
+    "electron@44.7.0": true
+  }
+}

@@ -1,0 +1,87 @@
+# =============================================================================
+# Nextora Invoice Generator - Root .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. Environment Secrets & Private Credentials
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+secrets/
+credentials/
+
+# -----------------------------------------------------------------------------
+# 2. Dependencies & Package Manager Caches
+# -----------------------------------------------------------------------------
+node_modules/
+.npm/
+.eslintcache
+*.tsbuildinfo
+
+# -----------------------------------------------------------------------------
+# 3. Generated Build & Packaging Artifacts
+# -----------------------------------------------------------------------------
+dist/
+dist-electron/
+release/
+out/
+coverage/
+.netlify/
+
+# -----------------------------------------------------------------------------
+# 4. Logs, Diagnostics & Temporary Files
+# -----------------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+*.bak
+*.old
+tmp/
+test-results/
+.freebuff/
+
+# -----------------------------------------------------------------------------
+# 5. Local Databases & Backups (Preserve Migrations & Schemas)
+# -----------------------------------------------------------------------------
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+backups/
+
+# -----------------------------------------------------------------------------
+# 6. Generated Reports & Export Documents
+# -----------------------------------------------------------------------------
+generated/
+generated-documents/
+exports/
+*.pdf
+*.xlsx
+*.xls
+*.csv
+
+# -----------------------------------------------------------------------------
+# 7. Operating System & Editor Artifacts
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
