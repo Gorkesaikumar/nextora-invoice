@@ -150,7 +150,7 @@ test('4. Invoice export creates valid XLSX, CSV, PDF and structured JSON files w
   assert.ok(pdfDoc.getPageCount() >= 1);
 });
 
-test('5. Missing or corrupted export file is strictly rejected during verification', () => {
+test('5. Missing or corrupted export file is strictly rejected during verification', async () => {
   const fakeManifest = {
     category: 'QUOTATIONS',
     record_count: 1,
@@ -163,7 +163,7 @@ test('5. Missing or corrupted export file is strictly rejected during verificati
       pdf: { path: '/tmp/fake.pdf', filename: 'a.pdf', sha256: 'abc', size_bytes: 10 },
     },
   };
-  assert.throws(() => verifyExportManifest(fakeManifest), /not found/i);
+  await assert.rejects(async () => verifyExportManifest(fakeManifest), /not found/i);
 });
 
 test('6. Incorrect confirmation phrase is rejected', async () => {

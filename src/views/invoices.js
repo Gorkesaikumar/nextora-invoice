@@ -143,6 +143,7 @@ export const render = async (container, params, ctx) => {
               <td class="whitespace-nowrap text-right">
                 ${row.status === 'DRAFT' ? `<button type="button" data-action="edit" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Edit</button>` : ''}
                 ${row.status === 'DRAFT' ? `<button type="button" data-action="issue" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Issue</button>` : ''}
+                ${row.status === 'DRAFT' && !row.invoice_number ? `<button type="button" data-action="delete-draft" data-id="${esc(row.id)}" class="ml-3 text-xs text-red-600 hover:text-red-800">Delete</button>` : ''}
                 ${row.status === 'ISSUED' && row.balance_due_minor > 0 ? `<button type="button" data-action="pay" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Payment</button>` : ''}
                 <button type="button" data-action="pdf" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">PDF</button>
                 ${row.status === 'ISSUED' && row.paid_minor === 0 ? `<button type="button" data-action="cancel" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Cancel</button>` : ''}
@@ -190,6 +191,26 @@ export const render = async (container, params, ctx) => {
     closeModal();
     toast(`Invoice ${result.invoice.invoice_number} issued.`);
     ctx.rerender();
+  });
+  ctx.on('delete-draft', trigger => {
+    pendingId = trigger.dataset.id;
+    confirmModal({
+      title: 'Delete draft invoice',
+      message: 'Are you sure you want to delete this draft invoice? Only unissued drafts with no recorded payments can be deleted. This cannot be undone.',
+      confirmLabel: 'Delete draft',
+      action: 'confirm-delete-draft',
+      tone: 'danger',
+    });
+  });
+  ctx.on('confirm-delete-draft', async () => {
+    try {
+      await api.del(`/api/invoices/${pendingId}`);
+      closeModal();
+      toast('Draft invoice deleted.');
+      ctx.rerender();
+    } catch (err) {
+      toast(err.message, 'danger');
+    }
   });
   ctx.on('confirm-credit', () => { closeModal(); ctx.navigate(`#/invoices/${pendingId}`); });
   ctx.on('page-prev', () => { ctx.setPage(Math.max(1, ctx.page - 1)); ctx.rerender(); });

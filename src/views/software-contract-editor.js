@@ -356,6 +356,17 @@ export async function softwareAgreementForm(ctx, existing = null) {
 
             ${field({ label: 'Client-Provided Assets & Access', name: 'client_assets_access', type: 'textarea', value: a.client_assets_access, className: 'sm:col-span-3', placeholder: 'Branding collateral, domain registrar credentials, API keys...' })}
             ${field({ label: 'User Acceptance Testing Criteria', name: 'acceptance_criteria', type: 'textarea', value: a.acceptance_criteria, className: 'sm:col-span-3', placeholder: 'Standard 7 business days review window upon staging deployment...' })}
+            ${field({
+              label: 'Contract Branding Mode', name: 'branding_mode', id: 'branding_mode', className: 'sm:col-span-3',
+              options: [
+                { value: 'COMPANY_ONLY', label: 'Company Logo Only (Default for Software Contracts)' },
+                { value: 'BOTH', label: 'Company & Product Logos' },
+                { value: 'PRODUCT_ONLY', label: 'Product Logo Only' },
+                { value: 'TEXT_ONLY', label: 'Text Only (No brand logo images)' },
+              ],
+              value: a.branding_mode || 'COMPANY_ONLY',
+              hint: 'Determines whether Company and Product logos appear on the contract header and PDF.',
+            })}
           </div>
         </div>
 
@@ -828,6 +839,7 @@ export async function softwareAgreementForm(ctx, existing = null) {
       client_assets_access: String(form.get('client_assets_access') || '').trim(),
       third_party_integrations: String(form.get('third_party_integrations') || '').trim(),
       acceptance_criteria: String(form.get('acceptance_criteria') || '').trim(),
+      branding_mode: String(form.get('branding_mode') || 'COMPANY_ONLY'),
       project_notes: '',
 
       features: finalFeatures,
@@ -900,12 +912,21 @@ export async function renderSoftwareAgreementPreview(container, agreementId, ctx
     return;
   }
 
+  let brandAssets = { product_logo: { exists: false }, company_logo: { exists: false } };
+  try {
+    brandAssets = await api.get('/api/marketing/brand-assets');
+  } catch { /* ignore */ }
+
   const s = res.snapshot;
   const fin = s.financials || {};
   const features = s.scope?.features || [];
   const milestones = s.milestones?.payment_milestones || [];
   const sup = s.support_and_maintenance || {};
   const clauses = s.clauses || {};
+
+  const mode = s.branding_mode || 'COMPANY_ONLY';
+  const showCompany = (mode === 'BOTH' || mode === 'COMPANY_ONLY') && brandAssets.company_logo?.exists;
+  const showProduct = (mode === 'BOTH' || mode === 'PRODUCT_ONLY') && brandAssets.product_logo?.exists;
 
   container.innerHTML = `
     ${pageHeader({
@@ -917,6 +938,12 @@ export async function renderSoftwareAgreementPreview(container, agreementId, ctx
         ${button({ label: 'Download PDF', action: 'download-sw-pdf-btn', variant: 'secondary', icon: 'download' })}
         ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
           ? button({ label: 'Edit Draft', action: 'edit-sw-preview-draft', variant: 'secondary' })
+          : ''}
+        ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
+          ? button({ label: 'Delete Draft', action: 'delete-sw-preview-draft', variant: 'danger' })
+          : ''}
+        ${['ACCEPTED', 'SIGNED', 'ACTIVE', 'TERMINATED'].includes(s.status)
+          ? button({ label: 'Archive', action: 'archive-sw-preview-contract', variant: 'secondary' })
           : ''}
         ${button({ label: 'Status Actions', action: 'open-sw-status-modal', variant: 'secondary' })}
       `,
@@ -935,277 +962,9 @@ export async function renderSoftwareAgreementPreview(container, agreementId, ctx
       </div>
     </div>
 
-    <!-- Legal Agreement Document Container (Phase 13 Branded HTML View) -->
-    <div class="mx-auto max-w-4xl border border-outline bg-surface p-8 sm:p-12 shadow-sm font-body text-sm leading-relaxed text-on-surface">
-      
-      <!-- Document Header with Company Letterhead & Identity -->
-      <div class="flex flex-col sm:flex-row justify-between items-start gap-6 border-b border-outline pb-6 mb-8">
-        <div>
-          <h2 class="font-headline text-lg font-bold uppercase tracking-tight text-primary">${esc(s.business.business_name)}</h2>
-          <p class="text-xs text-on-surface-variant">${esc(s.business.address)}</p>
-          <p class="text-xs text-on-surface-variant">${[s.business.phone, s.business.website, s.business.email].filter(Boolean).join(' · ')}</p>
-          <p class="font-mono text-xs text-on-surface-variant mt-0.5 font-bold">GSTIN: ${esc(s.business.gstin)} · State: Telangana (36)</p>
-        </div>
-        <div class="sm:text-right">
-          <div class="inline-block border border-outline bg-surface-dim px-3 py-1 text-xs font-mono font-bold">
-            CONTRACT #${esc(s.contract_number)}
-          </div>
-          <div class="mt-2 text-xs text-on-surface-variant">Service: <span class="font-bold text-on-surface">${esc(s.service_category)}</span></div>
-          <div class="text-xs text-on-surface-variant font-mono">Date: ${date(s.project?.start_date)}</div>
-        </div>
-      </div>
-
-      <!-- Agreement Title -->
-      <div class="text-center mb-8">
-        <h1 class="font-headline text-xl font-bold tracking-tight uppercase">${esc(s.title)}</h1>
-        <p class="text-xs text-on-surface-variant mt-1">Professional Software Development Services, Scope &amp; Milestone Terms</p>
-      </div>
-
-      <!-- Section 1: Parties -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 1: Parties to the Agreement
-        </h3>
-        <p class="text-xs mb-3 leading-relaxed">${esc(clauses.section_1_parties)}</p>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div class="border border-outline p-3 bg-surface-dim">
-            <p class="label-technical">Developer / Service Provider</p>
-            <p class="font-bold text-sm mt-1">${esc(s.business.business_name)}</p>
-            <p class="text-xs text-on-surface-variant mt-1">${esc(s.business.address)}</p>
-            <p class="text-xs text-on-surface-variant">Phone: ${esc(s.business.phone)} · Web: ${esc(s.business.website)}</p>
-            <p class="font-mono text-xs font-bold mt-1">GSTIN: ${esc(s.business.gstin)}</p>
-          </div>
-          <div class="border border-outline p-3 bg-surface-dim">
-            <p class="label-technical">Client / Customer</p>
-            <p class="font-bold text-sm mt-1">${esc(s.client.legal_name || s.client.name)}</p>
-            <p class="text-xs text-on-surface-variant mt-1">${esc([s.client.billing_address, s.client.city, s.client.postal_code, s.client.country].filter(Boolean).join(', '))}</p>
-            <p class="text-xs text-on-surface-variant">Contact: ${esc(s.client.contact_person || '—')} · Email: ${esc(s.client.email || '—')}</p>
-            <p class="font-mono text-xs font-bold mt-1">GSTIN: ${esc(s.client.gstin || 'Unregistered')} · State Code: ${esc(s.client.state_code || '36')}</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section 2: Project Overview & Objectives -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 2: Project Overview &amp; Specifications
-        </h3>
-        <div class="space-y-2 text-xs leading-relaxed">
-          <p><span class="font-semibold">Service Category:</span> ${esc(s.service_category)}</p>
-          ${s.project?.service_description ? `<p><span class="font-semibold">Description:</span> ${esc(s.project.service_description)}</p>` : ''}
-          ${s.project?.business_objectives ? `<p><span class="font-semibold">Business Objectives:</span> ${esc(s.project.business_objectives)}</p>` : ''}
-          <p><span class="font-semibold">Estimated Timeline:</span> ${esc(s.project?.development_duration || '1 Month')} (Commencing from satisfaction of prerequisites)</p>
-          ${s.project?.deployment_target ? `<p><span class="font-semibold">Deployment Target:</span> ${esc(s.project.deployment_target)}</p>` : ''}
-          ${s.project?.hosting_responsibility ? `<p><span class="font-semibold">Hosting Responsibility:</span> ${esc(s.project.hosting_responsibility)}</p>` : ''}
-          ${s.project?.third_party_integrations ? `<p><span class="font-semibold">Third-Party Integrations:</span> ${esc(s.project.third_party_integrations)}</p>` : ''}
-        </div>
-      </div>
-
-      <!-- Section 3: Feature Scope (Schedule A) -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 3: Requirements &amp; Feature Scope (Schedule A)
-        </h3>
-        <p class="text-xs mb-3 text-on-surface-variant">Only the approved features itemized in the table below form part of this engagement scope:</p>
-
-        <div class="overflow-x-auto border border-outline mb-4">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-surface-dim border-b border-outline font-bold">
-              <tr>
-                <th class="p-2 w-10 text-center">S.No</th>
-                <th class="p-2 w-44">Feature Name</th>
-                <th class="p-2">Description</th>
-                <th class="p-2 w-32">Deliverables</th>
-                <th class="p-2 w-20 text-center">Priority</th>
-                <th class="p-2 w-20 text-center">Scope</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${features.map((f, i) => `
-                <tr class="border-b border-outline ${i % 2 === 1 ? 'bg-surface-dim' : ''}">
-                  <td class="p-2 text-center font-mono">${i + 1}</td>
-                  <td class="p-2 font-semibold">${esc(f.name)}</td>
-                  <td class="p-2">${esc(f.description)}</td>
-                  <td class="p-2 text-on-surface-variant">${esc(f.deliverables || '—')}</td>
-                  <td class="p-2 text-center">${esc(f.priority || 'Normal')}</td>
-                  <td class="p-2 text-center">
-                    <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${f.included !== false ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'}">
-                      ${f.included !== false ? 'Included' : 'Excluded'}
-                    </span>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-
-        <div class="space-y-1 text-xs text-on-surface-variant">
-          ${s.scope?.included_services ? `<p>• <span class="font-semibold text-on-surface">Included Services:</span> ${esc(s.scope.included_services)}</p>` : ''}
-          ${s.scope?.excluded_services ? `<p>• <span class="font-semibold text-on-surface">Excluded Services:</span> ${esc(s.scope.excluded_services)}</p>` : ''}
-          ${s.scope?.client_responsibilities ? `<p>• <span class="font-semibold text-on-surface">Client Responsibilities:</span> ${esc(s.scope.client_responsibilities)}</p>` : ''}
-          ${s.scope?.third_party_dependencies ? `<p>• <span class="font-semibold text-on-surface">Third-Party Dependencies:</span> ${esc(s.scope.third_party_dependencies)}</p>` : ''}
-        </div>
-      </div>
-
-      <!-- Section 4: Project Pricing & GST Calculations -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 4: Project Pricing &amp; GST Calculations
-        </h3>
-        <p class="text-xs mb-3 text-on-surface-variant">Financial breakdown configured pursuant to applicable Indian GST regulations:</p>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 border border-outline p-4 bg-surface-dim text-xs mb-4">
-          <div class="space-y-2">
-            <div class="flex justify-between"><span>Pricing Basis:</span><span class="font-bold">${fin.pricing_mode === 'INCLUSIVE' ? 'GST-Inclusive' : 'GST-Exclusive'}</span></div>
-            <div class="flex justify-between"><span>1. Project Base Price:</span><span class="font-mono font-bold">${money(fin.base_price_minor)}</span></div>
-            ${fin.discount_minor > 0 ? `<div class="flex justify-between text-emerald-700"><span>2. Agreed Discount:</span><span class="font-mono font-bold">-${money(fin.discount_minor)}</span></div>` : ''}
-            <div class="flex justify-between font-semibold border-t border-outline pt-1"><span>3. Total Taxable Value:</span><span class="font-mono">${money(fin.taxable_amount_minor)}</span></div>
-            <div class="flex justify-between text-[11px] text-on-surface-variant">
-              <span>Tax Classification:</span>
-              <span>${esc(fin.supply_type_label || 'Intra-state')}</span>
-            </div>
-            ${fin.supply_type === 'INTRA' ? `
-              <div class="flex justify-between pl-2 text-[11px]"><span>• CGST (${(fin.gst_rate_bp/200).toFixed(1)}%):</span><span class="font-mono">${money(fin.cgst_minor)}</span></div>
-              <div class="flex justify-between pl-2 text-[11px]"><span>• SGST (${(fin.gst_rate_bp/200).toFixed(1)}%):</span><span class="font-mono">${money(fin.sgst_minor)}</span></div>
-            ` : `
-              <div class="flex justify-between pl-2 text-[11px]"><span>• IGST (${fin.gst_rate_percent}%):</span><span class="font-mono">${money(fin.igst_minor)}</span></div>
-            `}
-          </div>
-
-          <div class="space-y-2 border-t sm:border-t-0 sm:border-l border-outline sm:pl-4 pt-2 sm:pt-0">
-            <div class="flex justify-between text-sm font-bold text-primary"><span>4. Final Project Amount:</span><span class="font-mono">${money(fin.final_amount_minor)}</span></div>
-            <div class="flex justify-between text-xs font-semibold text-cyan-accent border-t border-outline pt-2">
-              <span>5. Advance Payable (${fin.advance_percentage_label || '10%'}):</span>
-              <span class="font-mono">${money(fin.advance_amount_minor)}</span>
-            </div>
-            <p class="text-[11px] text-on-surface-variant">Payable upon contract execution prior to project kickoff.</p>
-            <div class="flex justify-between text-xs font-bold text-on-surface border-t border-outline pt-2">
-              <span>6. Remaining Project Balance:</span>
-              <span class="font-mono">${money(fin.remaining_balance_minor)}</span>
-            </div>
-            <div class="mt-2 text-[11px]">
-              <span class="font-semibold">Reconciliation:</span>
-              <span class="${fin.is_milestones_reconciled ? 'text-emerald-700 font-bold' : 'text-amber-800 font-bold'}">
-                ${fin.is_milestones_reconciled ? 'Reconciled with agreed payment milestones' : 'Milestone allocation pending'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Milestones Table -->
-        <h4 class="font-headline text-xs font-bold uppercase tracking-wider mb-2 text-on-surface">Agreed Payment Milestones</h4>
-        <div class="overflow-x-auto border border-outline mb-3">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-surface-dim border-b border-outline font-bold">
-              <tr>
-                <th class="p-2 w-12 text-center">S.No</th>
-                <th class="p-2 w-48">Milestone Event</th>
-                <th class="p-2">Trigger Event / Deliverable</th>
-                <th class="p-2 w-32">Target Due Date</th>
-                <th class="p-2 w-32 text-right">Amount (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${milestones.map((m, i) => `
-                <tr class="border-b border-outline ${i % 2 === 1 ? 'bg-surface-dim' : ''}">
-                  <td class="p-2 text-center font-mono">${i + 1}</td>
-                  <td class="p-2 font-semibold">${esc(m.name)}</td>
-                  <td class="p-2">${esc(m.trigger)}</td>
-                  <td class="p-2 text-on-surface-variant">${m.due_date ? date(m.due_date) : 'On Acceptance'}</td>
-                  <td class="p-2 text-right font-mono font-bold">${money(m.amount_minor || 0)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Section 5: Development Schedule & Timeline -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 5: Development Schedule &amp; Timeline
-        </h3>
-        <p class="text-xs leading-relaxed mb-2">${esc(clauses.section_4_development_schedule)}</p>
-      </div>
-
-      <!-- Section 6: Support, Paid Features & Maintenance -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 6: Three Months Free Support, Paid Features &amp; Maintenance
-        </h3>
-        <div class="space-y-3 text-xs leading-relaxed">
-          <div class="p-3 bg-surface-dim border border-outline">
-            <p class="font-bold text-on-surface">A. Three Months Complimentary Support</p>
-            <p class="mt-1">${esc(clauses.section_8_free_support)}</p>
-            <p class="mt-2 text-[11px] text-on-surface-variant font-mono">Period: ${date(sup.support_start_date)} to ${date(sup.support_end_date)}</p>
-          </div>
-
-          <div class="p-3 bg-surface-dim border border-outline">
-            <p class="font-bold text-on-surface">B. Post-Support Feature Development (₹5,000 / Feature Default)</p>
-            <p class="mt-1">${esc(clauses.section_9_paid_features)}</p>
-            <p class="mt-1 text-on-surface font-semibold">Configured Default Rate: ${esc(sup.post_support_feature_rate_formatted)} per approved feature.</p>
-          </div>
-
-          <div class="p-3 bg-surface-dim border border-outline">
-            <p class="font-bold text-on-surface">C. Optional Ongoing Monthly Maintenance (₹2,000 / Month Default)</p>
-            <p class="mt-1">${esc(clauses.section_10_maintenance)}</p>
-            <p class="mt-1 text-on-surface font-semibold">Status: ${sup.maintenance_included ? `Active (${sup.maintenance_rate_formatted} / Month)` : 'Not active unless elected in writing'}</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section 7: Standard Legal Clauses -->
-      <div class="mb-8">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider bg-surface-dim px-3 py-1.5 border-l-4 border-primary mb-3">
-          Section 7: Standard Commercial Terms &amp; Conditions
-        </h3>
-        <div class="space-y-4 text-xs leading-relaxed">
-          <div><p class="font-bold text-on-surface">7.1 Scope of Work &amp; Exclusions</p><p>${esc(clauses.section_2_scope_of_work)}</p></div>
-          <div><p class="font-bold text-on-surface">7.2 Requirements Sign-Off &amp; Approvals</p><p>${esc(clauses.section_3_requirements_approvals)}</p></div>
-          <div><p class="font-bold text-on-surface">7.3 Payment Obligations &amp; Delayed Settlements</p><p>${esc(clauses.section_5_payment_obligations)}</p></div>
-          <div><p class="font-bold text-on-surface">7.4 Scope Change Requests</p><p>${esc(clauses.section_6_change_requests)}</p></div>
-          <div><p class="font-bold text-on-surface">7.5 Testing, Review &amp; Acceptance</p><p>${esc(clauses.section_7_testing_acceptance)}</p></div>
-          <div><p class="font-bold text-on-surface">7.6 Intellectual Property Rights</p><p>${esc(clauses.section_11_intellectual_property)}</p></div>
-          <div><p class="font-bold text-on-surface">7.7 Confidentiality &amp; Data Protection</p><p>${esc(clauses.section_12_confidentiality)}</p></div>
-          <div><p class="font-bold text-on-surface">7.8 Third-Party Platforms &amp; API Limitations</p><p>${esc(clauses.section_13_third_party_services)}</p></div>
-          <div><p class="font-bold text-on-surface">7.9 Suspension &amp; Termination</p><p>${esc(clauses.section_15_suspension_termination)}</p></div>
-          <div><p class="font-bold text-on-surface">7.10 Limitation of Liability</p><p>${esc(clauses.section_16_limitation_liability)}</p></div>
-          <div><p class="font-bold text-on-surface">7.11 Dispute Resolution &amp; Jurisdiction</p><p>${esc(clauses.section_17_dispute_resolution)}</p></div>
-        </div>
-      </div>
-
-      <!-- Section 8: Signatures & Execution -->
-      <div class="border-t-2 border-outline pt-6">
-        <h3 class="font-headline text-xs font-bold uppercase tracking-wider mb-2 text-on-surface">
-          Section 8: Acceptance &amp; Execution
-        </h3>
-        <p class="text-xs mb-6 text-on-surface-variant">${esc(clauses.section_18_signatures)}</p>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-8 text-xs">
-          <!-- Nextora Block -->
-          <div class="border border-outline p-4 bg-surface-dim">
-            <p class="label-technical">For Nextora Creations</p>
-            <div class="h-16 border-b border-outline mb-2"></div>
-            <p class="font-bold text-on-surface">${esc(s.business.signatory_name)}</p>
-            <p class="text-on-surface-variant">${esc(s.business.signatory_title)}</p>
-            <p class="text-on-surface-variant font-mono mt-1 text-[11px]">Date: ____________________</p>
-          </div>
-
-          <!-- Client Block -->
-          <div class="border border-outline p-4 bg-surface-dim">
-            <p class="label-technical">For Client / Customer</p>
-            <div class="h-16 border-b border-outline mb-2"></div>
-            <p class="font-bold text-on-surface">${esc(s.client.signatory_name || s.client.name)}</p>
-            <p class="text-on-surface-variant">${esc(s.client.signatory_designation || 'Authorized Representative')}</p>
-            <p class="text-on-surface-variant font-mono mt-1 text-[11px]">Date: ____________________</p>
-          </div>
-        </div>
-
-        <p class="text-[10px] text-on-surface-variant italic mt-6 text-center">
-          Note: Previewing or downloading this document does not constitute proof of signature. Both parties must execute this Agreement via verified signature before project commencement.
-        </p>
-      </div>
+    <!-- Canonical Software Agreement Document Preview (Single Source of Truth) -->
+    <div class="nc-preview-container mx-auto max-w-4xl border border-outline bg-surface shadow-sm overflow-hidden">
+      ${res.html || '<p class="p-8 text-center text-on-surface-variant">Unable to load contract preview HTML.</p>'}
     </div>
   `;
 
@@ -1236,6 +995,60 @@ export async function renderSoftwareAgreementPreview(container, agreementId, ctx
     } catch (err) { toast(err.message, 'danger'); }
   });
 
+  ctx.on('delete-sw-preview-draft', () => {
+    const node = modal({
+      title: 'Delete Draft Software Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Are you sure you want to permanently delete draft software contract <strong class="font-mono">${esc(s.contract_number)}</strong> for <strong class="font-semibold">${esc(s.client?.name || 'Client')}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Only draft software contracts can be deleted. This action cannot be undone.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Delete Draft', action: 'confirm-delete-sw-preview-draft-btn', variant: 'danger' })}
+      `,
+    });
+
+    node.querySelector('[data-action="confirm-delete-sw-preview-draft-btn"]')?.addEventListener('click', async () => {
+      try {
+        await api.del(`/api/marketing/software-agreements/${agreementId}`);
+        closeModal();
+        toast('Draft software contract deleted.');
+        ctx.navigate('#/marketing/contracts');
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
+
+  ctx.on('archive-sw-preview-contract', () => {
+    const node = modal({
+      title: 'Archive Software Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Archive software contract <strong class="font-mono">${esc(s.contract_number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Archived contracts remain in your historical audit records but are marked as ARCHIVED.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Archive Contract', action: 'confirm-archive-sw-preview-btn', variant: 'primary' })}
+      `,
+    });
+
+    node.querySelector('[data-action="confirm-archive-sw-preview-btn"]')?.addEventListener('click', async () => {
+      try {
+        await api.post(`/api/marketing/software-agreements/${agreementId}/archive`, {});
+        closeModal();
+        toast('Software contract archived.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
+
   ctx.on('open-sw-status-modal', () => {
     const node = modal({
       title: 'Update Software Contract Status',
@@ -1251,6 +1064,7 @@ export async function renderSoftwareAgreementPreview(container, agreementId, ctx
               { value: 'SIGN', label: 'Record Execution / Signatures (ACCEPTED → SIGNED)' },
               { value: 'ACTIVATE', label: 'Activate Development (SIGNED → ACTIVE)' },
               { value: 'COMPLETE', label: 'Complete Project (ACTIVE → COMPLETED)' },
+              { value: 'ARCHIVE', label: 'Archive Agreement (→ ARCHIVED)' },
               { value: 'CANCEL', label: 'Cancel Agreement (→ CANCELLED)' },
             ],
             value: s.status === 'DRAFT' ? 'SUBMIT_APPROVAL' : (s.status === 'SENT' ? 'ACCEPT' : 'SIGN'),

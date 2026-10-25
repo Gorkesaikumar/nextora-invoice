@@ -7,6 +7,9 @@ const A4 = { width: 595.28, height: 841.89 };
 const MARGIN = 40;
 const CONTENT_WIDTH = A4.width - MARGIN * 2; // 515.28
 const FOOTER_HEIGHT = 35;
+const PAGE_CONTENT_BOTTOM = MARGIN + FOOTER_HEIGHT; // 75
+const FRESH_PAGE_USABLE_HEIGHT = (A4.height - 42) - PAGE_CONTENT_BOTTOM; // 724.89
+
 const INK = rgb(0.08, 0.08, 0.08);
 const MUTED = rgb(0.42, 0.45, 0.5);
 const LINE = rgb(0.88, 0.89, 0.91);
@@ -69,7 +72,7 @@ async function embedImage(doc, asset) {
   }
 }
 
-export async function renderSoftwareContractPdf(snapshot, { companyLogo = null } = {}) {
+export async function renderSoftwareContractPdf(snapshot, { companyLogo = null, productLogo = null } = {}) {
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
 
@@ -80,7 +83,12 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   const font = await doc.embedFont(regularBytes, { subset: true });
   const bold = await doc.embedFont(boldBytes, { subset: true });
 
-  const companyLogoImg = await embedImage(doc, companyLogo);
+  const mode = snapshot.branding_mode || 'COMPANY_ONLY';
+  const allowCompany = mode === 'BOTH' || mode === 'COMPANY_ONLY';
+  const allowProduct = mode === 'BOTH' || mode === 'PRODUCT_ONLY';
+
+  const companyLogoImg = allowCompany ? await embedImage(doc, companyLogo) : null;
+  const productLogoImg = allowProduct ? await embedImage(doc, productLogo) : null;
 
   const accent = hexToRgb(snapshot.business?.pdf_accent_color);
   const pages = [];
@@ -114,11 +122,23 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     y = A4.height - 42;
   }
 
+  function remainingSpace() {
+    return y - PAGE_CONTENT_BOTTOM;
+  }
+
   function ensureSpace(neededHeight) {
-    if (y - neededHeight < MARGIN + FOOTER_HEIGHT) {
+    if (y - neededHeight < PAGE_CONTENT_BOTTOM) {
       addPage();
       drawRunningHeader();
     }
+  }
+
+  function measureTextHeight(value, size = 8.5, useBold = false, max = CONTENT_WIDTH) {
+    const content = String(value ?? '');
+    if (!content.trim()) return 0;
+    const activeFont = useBold ? bold : font;
+    const lines = wrapText(activeFont, content, size, max);
+    return lines.length * (size + 3);
   }
 
   function drawText(value, x, top, size = 8.5, useBold = false, color = INK, max = CONTENT_WIDTH) {
@@ -126,7 +146,7 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     if (!content.trim()) return top;
     const activeFont = useBold ? bold : font;
     for (const line of wrapText(activeFont, content, size, max)) {
-      if (top - size < MARGIN + FOOTER_HEIGHT) {
+      if (top - size < PAGE_CONTENT_BOTTOM) {
         addPage();
         drawRunningHeader();
         top = y;
@@ -137,8 +157,9 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     return top;
   }
 
-  function drawSectionHeading(num, title) {
-    ensureSpace(40);
+  function drawSectionHeading(num, title, minContentHeight = 35) {
+    // Total vertical drop for heading is 38 (10 margin-top + 28 bottom drop)
+    ensureSpace(38 + minContentHeight);
     y -= 10;
     page.drawRectangle({
       x: MARGIN, y: y - 22, width: CONTENT_WIDTH, height: 22, color: SOFT_BG,
@@ -197,6 +218,18 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   // Contract Identity on Right
   const rightX = A4.width - MARGIN - 180;
   let rTop = headerTop - 2;
+
+  if (productLogoImg) {
+    const scaledP = productLogoImg.scaleToFit(130, 32);
+    page.drawImage(productLogoImg, {
+      x: A4.width - MARGIN - scaledP.width,
+      y: rTop - scaledP.height,
+      width: scaledP.width,
+      height: scaledP.height,
+    });
+    rTop -= (scaledP.height + 6);
+  }
+
   page.drawRectangle({
     x: rightX, y: rTop - 45, width: 180, height: 45,
     color: SOFT_BG, borderWidth: 0.5, borderColor: LINE,
@@ -254,14 +287,20 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   y -= metaBoxHeight + 14;
 
   // --- SECTION 1: PARTIES ---
-  drawSectionHeading(1, 'Parties to the Agreement');
-  y = drawText(snapshot.clauses?.section_1_parties || '', MARGIN, y, 7.5, false, INK);
+  const s1Intro = snapshot.clauses?.section_1_parties || '';
+  const s1IntroHeight = measureTextHeight(s1Intro, 7.5, false, CONTENT_WIDTH);
+  const cardH = 75;
+  const s1TotalHeight = 38 + s1IntroHeight + 8 + cardH + 14;
+  if (s1TotalHeight <= FRESH_PAGE_USABLE_HEIGHT && remainingSpace() < s1TotalHeight) {
+    addPage();
+    drawRunningHeader();
+  }
+  drawSectionHeading(1, 'Parties to the Agreement', s1IntroHeight + 8 + cardH);
+  y = drawText(s1Intro, MARGIN, y, 7.5, false, INK);
   y -= 8;
 
   // Client and Developer Side-by-Side Cards
-  ensureSpace(80);
   const cardW = (CONTENT_WIDTH - 12) / 2;
-  const cardH = 75;
 
   // Developer Card
   page.drawRectangle({
@@ -292,8 +331,6 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   y -= cardH + 14;
 
   // --- SECTION 2: PROJECT & SERVICE DETAILS ---
-  drawSectionHeading(2, 'Project & Service Details');
-  ensureSpace(60);
   const projDetails = [
     `Service Category: ${snapshot.service_category}`,
     snapshot.project?.service_description ? `Description: ${snapshot.project.service_description}` : null,
@@ -306,29 +343,104 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     snapshot.project?.acceptance_criteria ? `Acceptance Criteria: ${snapshot.project.acceptance_criteria}` : null,
   ].filter(Boolean);
 
+  let s2DetailsHeight = 0;
+  for (const line of projDetails) {
+    s2DetailsHeight += measureTextHeight(`• ${line}`, 7.5, false, CONTENT_WIDTH - 4);
+  }
+  const s2TotalHeight = 38 + s2DetailsHeight + 6;
+  const s2MinStartSpace = 38 + measureTextHeight(`• ${projDetails[0]}`, 7.5, false, CONTENT_WIDTH - 4) + measureTextHeight(`• ${projDetails[1]}`, 7.5, false, CONTENT_WIDTH - 4) + 6;
+
+  if (s2TotalHeight <= FRESH_PAGE_USABLE_HEIGHT) {
+    if (remainingSpace() < s2TotalHeight) {
+      addPage();
+      drawRunningHeader();
+    }
+  } else if (remainingSpace() < s2MinStartSpace) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  drawSectionHeading(2, 'Project & Service Details', s2MinStartSpace - 38);
   for (const line of projDetails) {
     y = drawText(`• ${line}`, MARGIN + 4, y, 7.5, false, INK);
   }
   y -= 6;
 
   // --- SECTION 3: REQUIREMENTS & FEATURE SCOPE (SCHEDULE A) ---
-  drawSectionHeading(3, 'Requirements & Feature Scope (Schedule A)');
-  y = drawText('The software solution includes the following agreed features, deliverables, and acceptance criteria. Features not approved in writing herein are excluded from scope.', MARGIN, y, 7.5, false, MUTED);
-  y -= 8;
+  const s3Intro = 'The software solution includes the following agreed features, deliverables, and acceptance criteria. Features not approved in writing herein are excluded from scope.';
+  const s3IntroH = measureTextHeight(s3Intro, 7.5, false, CONTENT_WIDTH) + 8;
+
+  const fCols = [
+    { name: 'S.No', w: 32, align: 'left' },
+    { name: 'Feature Name', w: 105, align: 'left' },
+    { name: 'Description', w: 130, align: 'left' },
+    { name: 'Deliverables', w: 90, align: 'left' },
+    { name: 'Priority', w: 45, align: 'center' },
+    { name: 'Scope', w: 45, align: 'center' },
+    { name: 'Notes / Criteria', w: 68, align: 'left' },
+  ];
 
   const features = snapshot.scope?.features || [];
+  const featureRowHeights = [];
+  let s3TableHeight = 0;
   if (features.length) {
-    ensureSpace(40);
-    // Table Header
-    const fCols = [
-      { name: 'S.No', w: 32, align: 'left' },
-      { name: 'Feature Name', w: 105, align: 'left' },
-      { name: 'Description', w: 130, align: 'left' },
-      { name: 'Deliverables', w: 90, align: 'left' },
-      { name: 'Priority', w: 45, align: 'center' },
-      { name: 'Scope', w: 45, align: 'center' },
-      { name: 'Notes / Criteria', w: 68, align: 'left' },
-    ];
+    s3TableHeight += 18; // Table Header
+    features.forEach(f => {
+      const nameLines = wrapText(bold, f.name || '—', 7, fCols[1].w - 8);
+      const descLines = wrapText(font, f.description || '—', 6.5, fCols[2].w - 8);
+      const delLines = wrapText(font, f.deliverables || '—', 6.5, fCols[3].w - 8);
+      const notes = f.acceptance_criteria || f.notes || '—';
+      const notesLines = wrapText(font, notes, 6.5, fCols[6].w - 8);
+      const maxLines = Math.max(nameLines.length, descLines.length, delLines.length, notesLines.length, 1);
+      const rH = Math.max(18, maxLines * 8.5 + 6);
+      featureRowHeights.push(rH);
+      s3TableHeight += rH;
+    });
+    s3TableHeight += 8;
+  } else {
+    s3TableHeight += measureTextHeight('Features and functional specification to be confirmed prior to execution.', 7.5, false, MUTED) + 8;
+  }
+
+  const scopeNotes = [
+    snapshot.scope?.included_services ? `Included Services: ${snapshot.scope.included_services}` : null,
+    snapshot.scope?.excluded_services ? `Excluded Services: ${snapshot.scope.excluded_services}` : null,
+    snapshot.scope?.client_responsibilities ? `Client Responsibilities: ${snapshot.scope.client_responsibilities}` : null,
+    snapshot.scope?.third_party_dependencies ? `Third-Party Dependencies: ${snapshot.scope.third_party_dependencies}` : null,
+    snapshot.scope?.technical_assumptions ? `Technical Assumptions: ${snapshot.scope.technical_assumptions}` : null,
+    snapshot.scope?.scope_limitations ? `Scope Limitations: ${snapshot.scope.scope_limitations}` : null,
+  ].filter(Boolean);
+
+  let s3ScopeNotesHeight = 0;
+  if (scopeNotes.length) {
+    for (const sn of scopeNotes) {
+      s3ScopeNotesHeight += measureTextHeight(`• ${sn}`, 7.5, false, CONTENT_WIDTH - 4);
+    }
+    s3ScopeNotesHeight += 6;
+  }
+
+  const s3TotalHeight = 38 + s3IntroH + s3TableHeight + s3ScopeNotesHeight;
+  const s3MinStartSpace = features.length >= 2
+    ? 38 + s3IntroH + 18 + featureRowHeights[0] + featureRowHeights[1] + 8
+    : Math.min(s3TotalHeight, 150);
+
+  // Section 3 pagination rule:
+  // If the complete section fits on a fresh page, start it on the next page rather than splitting it.
+  // If larger than a fresh page, require at least s3MinStartSpace so multiple rows fit.
+  if (s3TotalHeight <= FRESH_PAGE_USABLE_HEIGHT) {
+    if (remainingSpace() < s3TotalHeight) {
+      addPage();
+      drawRunningHeader();
+    }
+  } else if (remainingSpace() < s3MinStartSpace) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  drawSectionHeading(3, 'Requirements & Feature Scope (Schedule A)', s3IntroH + (features.length ? 18 + featureRowHeights[0] : 20));
+  y = drawText(s3Intro, MARGIN, y, 7.5, false, MUTED);
+  y -= 8;
+
+  function drawFeatureTableHeader() {
     page.drawRectangle({
       x: MARGIN, y: y - 18, width: CONTENT_WIDTH, height: 18, color: TABLE_HEADER_BG,
     });
@@ -338,6 +450,10 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
       curX += col.w;
     });
     y -= 18;
+  }
+
+  if (features.length) {
+    drawFeatureTableHeader();
 
     features.forEach((f, idx) => {
       const sno = String(f.sno || idx + 1);
@@ -348,15 +464,14 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
       const scopeStatus = f.included === false ? 'Excluded' : 'Included';
       const notes = f.acceptance_criteria || f.notes || '—';
 
-      // Estimate row height based on text wrap
-      const nameLines = wrapText(bold, name, 7, fCols[1].w - 8);
-      const descLines = wrapText(font, desc, 6.5, fCols[2].w - 8);
-      const delLines = wrapText(font, del, 6.5, fCols[3].w - 8);
-      const notesLines = wrapText(font, notes, 6.5, fCols[6].w - 8);
-      const maxLines = Math.max(nameLines.length, descLines.length, delLines.length, notesLines.length, 1);
-      const rowHeight = Math.max(18, maxLines * 8.5 + 6);
+      const rowHeight = featureRowHeights[idx];
 
-      ensureSpace(rowHeight + 5);
+      // Repeat table header on continuation pages
+      if (y - (rowHeight + 5) < PAGE_CONTENT_BOTTOM) {
+        addPage();
+        drawRunningHeader();
+        drawFeatureTableHeader();
+      }
 
       // Zebra background
       if (idx % 2 === 1) {
@@ -379,6 +494,7 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
 
       // Name
       let topY = y - 11;
+      const nameLines = wrapText(bold, name, 7, fCols[1].w - 8);
       nameLines.forEach(l => {
         page.drawText(l, { x: cellX + 4, y: topY, size: 7, font: bold, color: INK });
         topY -= 8.5;
@@ -387,6 +503,7 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
 
       // Desc
       topY = y - 11;
+      const descLines = wrapText(font, desc, 6.5, fCols[2].w - 8);
       descLines.forEach(l => {
         page.drawText(l, { x: cellX + 4, y: topY, size: 6.5, font, color: INK });
         topY -= 8;
@@ -395,6 +512,7 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
 
       // Deliverables
       topY = y - 11;
+      const delLines = wrapText(font, del, 6.5, fCols[3].w - 8);
       delLines.forEach(l => {
         page.drawText(l, { x: cellX + 4, y: topY, size: 6.5, font, color: MUTED });
         topY -= 8;
@@ -414,6 +532,7 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
 
       // Notes
       topY = y - 11;
+      const notesLines = wrapText(font, notes, 6.5, fCols[6].w - 8);
       notesLines.forEach(l => {
         page.drawText(l, { x: cellX + 4, y: topY, size: 6.5, font, color: MUTED });
         topY -= 8;
@@ -426,18 +545,12 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   }
   y -= 8;
 
-  // Scope Notes (Included/Excluded, Responsibilities)
-  const scopeNotes = [
-    snapshot.scope?.included_services ? `Included Services: ${snapshot.scope.included_services}` : null,
-    snapshot.scope?.excluded_services ? `Excluded Services: ${snapshot.scope.excluded_services}` : null,
-    snapshot.scope?.client_responsibilities ? `Client Responsibilities: ${snapshot.scope.client_responsibilities}` : null,
-    snapshot.scope?.third_party_dependencies ? `Third-Party Dependencies: ${snapshot.scope.third_party_dependencies}` : null,
-    snapshot.scope?.technical_assumptions ? `Technical Assumptions: ${snapshot.scope.technical_assumptions}` : null,
-    snapshot.scope?.scope_limitations ? `Scope Limitations: ${snapshot.scope.scope_limitations}` : null,
-  ].filter(Boolean);
-
+  // Scope Notes
   if (scopeNotes.length) {
-    ensureSpace(40);
+    if (s3ScopeNotesHeight <= FRESH_PAGE_USABLE_HEIGHT && remainingSpace() < s3ScopeNotesHeight) {
+      addPage();
+      drawRunningHeader();
+    }
     for (const sn of scopeNotes) {
       y = drawText(`• ${sn}`, MARGIN + 4, y, 7.5, false, INK);
     }
@@ -445,13 +558,18 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   }
 
   // --- SECTION 4: PROJECT PRICING & GST BREAKDOWN ---
-  drawSectionHeading(4, 'Project Pricing & GST Calculations');
   const fin = snapshot.financials || {};
-  ensureSpace(120);
-
-  // Financial Breakdown Table
   const finBoxW = CONTENT_WIDTH;
   const finBoxH = 110;
+  const s4TotalHeight = 38 + finBoxH + 12;
+
+  // Always keep Section 4 heading and financial breakdown box together
+  if (remainingSpace() < s4TotalHeight) {
+    addPage();
+    drawRunningHeader();
+  }
+  drawSectionHeading(4, 'Project Pricing & GST Calculations', finBoxH + 12);
+
   page.drawRectangle({
     x: MARGIN, y: y - finBoxH, width: finBoxW, height: finBoxH,
     color: SOFT_BG, borderWidth: 0.5, borderColor: LINE,
@@ -502,18 +620,48 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   y -= finBoxH + 12;
 
   // --- SECTION 5: PAYMENT TERMS & MILESTONES ---
-  drawSectionHeading(5, 'Payment Terms & Milestones');
   const milestones = snapshot.milestones?.payment_milestones || [];
+  const mCols = [
+    { name: 'S.No', w: 32 },
+    { name: 'Milestone Name', w: 140 },
+    { name: 'Trigger Event / Deliverable', w: 175 },
+    { name: 'Due Date', w: 75 },
+    { name: 'Amount (₹)', w: 93 },
+  ];
+  const milestoneRowHeights = [];
+  let s5TableHeight = 0;
   if (milestones.length) {
-    ensureSpace(40);
-    // Table of Milestones
-    const mCols = [
-      { name: 'S.No', w: 32 },
-      { name: 'Milestone Name', w: 140 },
-      { name: 'Trigger Event / Deliverable', w: 175 },
-      { name: 'Due Date', w: 75 },
-      { name: 'Amount (₹)', w: 93 },
-    ];
+    s5TableHeight += 18; // Table header
+    milestones.forEach((m, idx) => {
+      const nameLines = wrapText(bold, m.name || `Milestone ${idx + 1}`, 7, mCols[1].w - 8);
+      const trigLines = wrapText(font, m.trigger || 'Upon deliverable completion', 6.5, mCols[2].w - 8);
+      const maxLines = Math.max(nameLines.length, trigLines.length, 1);
+      const rH = Math.max(18, maxLines * 8.5 + 6);
+      milestoneRowHeights.push(rH);
+      s5TableHeight += rH;
+    });
+    s5TableHeight += 8;
+  } else {
+    s5TableHeight += measureTextHeight('Remaining balance payable upon satisfactory delivery and deployment acceptance.', 7.5) + 8;
+  }
+  const s5TotalHeight = 38 + s5TableHeight;
+  const s5MinStartSpace = milestones.length
+    ? 38 + 18 + (milestoneRowHeights[0] || 18) + (milestoneRowHeights[1] || 18) + 8
+    : s5TotalHeight;
+
+  if (s5TotalHeight <= FRESH_PAGE_USABLE_HEIGHT) {
+    if (remainingSpace() < s5TotalHeight) {
+      addPage();
+      drawRunningHeader();
+    }
+  } else if (remainingSpace() < s5MinStartSpace) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  drawSectionHeading(5, 'Payment Terms & Milestones', s5MinStartSpace - 38);
+
+  function drawMilestoneTableHeader() {
     page.drawRectangle({
       x: MARGIN, y: y - 18, width: CONTENT_WIDTH, height: 18, color: TABLE_HEADER_BG,
     });
@@ -523,10 +671,20 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
       curX += col.w;
     });
     y -= 18;
+  }
+
+  if (milestones.length) {
+    drawMilestoneTableHeader();
 
     milestones.forEach((m, idx) => {
-      ensureSpace(20);
-      const mRowH = 18;
+      const mRowH = milestoneRowHeights[idx];
+      // Repeat header on continuation pages
+      if (y - (mRowH + 5) < PAGE_CONTENT_BOTTOM) {
+        addPage();
+        drawRunningHeader();
+        drawMilestoneTableHeader();
+      }
+
       if (idx % 2 === 1) {
         page.drawRectangle({
           x: MARGIN, y: y - mRowH, width: CONTENT_WIDTH, height: mRowH, color: SOFT_BG,
@@ -539,17 +697,36 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
         color: LINE,
       });
 
-      let mX = MARGIN;
-      page.drawText(String(idx + 1), { x: mX + 4, y: y - 12, size: 7, font, color: INK });
-      mX += mCols[0].w;
-      page.drawText(m.name || `Milestone ${idx + 1}`, { x: mX + 4, y: y - 12, size: 7, font: bold, color: INK });
-      mX += mCols[1].w;
-      page.drawText(m.trigger || 'Upon deliverable completion', { x: mX + 4, y: y - 12, size: 6.5, font, color: INK });
-      mX += mCols[2].w;
-      page.drawText(m.due_date ? formatDate(m.due_date) : 'On Acceptance', { x: mX + 4, y: y - 12, size: 6.5, font, color: MUTED });
-      mX += mCols[3].w;
+      let cellX = MARGIN;
+      // S.No
+      page.drawText(String(idx + 1), { x: cellX + 4, y: y - 12, size: 7, font, color: INK });
+      cellX += mCols[0].w;
+
+      // Milestone Name (wrapped cleanly)
+      const nameLines = wrapText(bold, m.name || `Milestone ${idx + 1}`, 7, mCols[1].w - 8);
+      let topY = y - 11;
+      nameLines.forEach(l => {
+        page.drawText(l, { x: cellX + 4, y: topY, size: 7, font: bold, color: INK });
+        topY -= 8.5;
+      });
+      cellX += mCols[1].w;
+
+      // Trigger / Deliverable (wrapped cleanly)
+      const trigLines = wrapText(font, m.trigger || 'Upon deliverable completion', 6.5, mCols[2].w - 8);
+      topY = y - 11;
+      trigLines.forEach(l => {
+        page.drawText(l, { x: cellX + 4, y: topY, size: 6.5, font, color: INK });
+        topY -= 8;
+      });
+      cellX += mCols[2].w;
+
+      // Due Date
+      page.drawText(m.due_date ? formatDate(m.due_date) : 'On Acceptance', { x: cellX + 4, y: y - 12, size: 6.5, font, color: MUTED });
+      cellX += mCols[3].w;
+
+      // Amount
       const amtStr = formatMinor(m.amount_minor || 0);
-      page.drawText(amtStr, { x: mX + 4, y: y - 12, size: 7.5, font: bold, color: INK });
+      page.drawText(amtStr, { x: cellX + 4, y: y - 12, size: 7.5, font: bold, color: INK });
 
       y -= mRowH;
     });
@@ -559,15 +736,17 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   y -= 8;
 
   // --- SECTION 6: DEVELOPMENT SCHEDULE & TIMELINE ---
-  drawSectionHeading(6, 'Development Timeline');
-  ensureSpace(40);
   const timeText = `The estimated project timeline is ${snapshot.project?.development_duration || 'approximately 1 month'}, commencing upon execution of this Agreement, receipt of the agreed 10% advance, and full delivery of client assets, credentials, and requirements sign-off. Delays in client feedback or dependencies shall extend the delivery date proportionally.`;
+  const s6Height = 38 + measureTextHeight(timeText, 7.5) + 8;
+  if (remainingSpace() < s6Height) {
+    addPage();
+    drawRunningHeader();
+  }
+  drawSectionHeading(6, 'Development Timeline', s6Height - 38);
   y = drawText(timeText, MARGIN, y, 7.5, false, INK);
   y -= 8;
 
   // --- SECTION 7: THREE MONTHS FREE SUPPORT & POST-SUPPORT TERMS ---
-  drawSectionHeading(7, 'Three Months Free Support & Post-Support Terms');
-  ensureSpace(70);
   const sup = snapshot.support_and_maintenance || {};
   const supText = [
     `1. Complimentary Support: A complimentary support period of ${sup.free_support_months ?? 3} months is provided commencing upon deployment/handover (${sup.support_start_date ? formatDate(sup.support_start_date) : 'commencement date'} to ${sup.support_end_date ? formatDate(sup.support_end_date) : '3 months thereafter'}).`,
@@ -575,25 +754,45 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     `3. Post-Support Feature Development: After the free support period expires, new feature requests shall be billed at the standard rate of ${sup.post_support_feature_rate_formatted || '₹5,000.00'} per approved feature, subject to written scope confirmation and applicable GST.`,
     `4. Feature Request Distinction: Bug fixes restore intended functionality under approved specs. New modules, changed workflows, and additional integrations constitute paid feature enhancements.`,
   ];
+  let s7TextHeight = 0;
+  for (const st of supText) {
+    s7TextHeight += measureTextHeight(st, 7.5);
+  }
+  const s7TotalHeight = 38 + s7TextHeight + 8;
+  const s7MinStartSpace = 38 + measureTextHeight(supText[0], 7.5) + measureTextHeight(supText[1], 7.5) + 8;
+
+  if (s7TotalHeight <= FRESH_PAGE_USABLE_HEIGHT) {
+    if (remainingSpace() < s7TotalHeight) {
+      addPage();
+      drawRunningHeader();
+    }
+  } else if (remainingSpace() < s7MinStartSpace) {
+    addPage();
+    drawRunningHeader();
+  }
+
+  drawSectionHeading(7, 'Three Months Free Support & Post-Support Terms', s7MinStartSpace - 38);
   for (const st of supText) {
     y = drawText(st, MARGIN, y, 7.5, false, INK);
   }
   y -= 8;
 
   // --- SECTION 8: ONGOING MAINTENANCE ---
-  drawSectionHeading(8, 'Monthly Maintenance Plan');
-  ensureSpace(50);
-  if (sup.maintenance_included) {
-    const maintText = `The Client has elected ongoing application maintenance at the agreed rate of ${sup.maintenance_rate_formatted || '₹2,000.00'} per month (plus applicable GST). This covers periodic application health monitoring, compatible dependency updates, and basic operational troubleshooting. It excludes new feature development, domain renewal, and cloud hosting costs. Maintenance may be cancelled by either party upon thirty (30) days written notice.`;
-    y = drawText(maintText, MARGIN, y, 7.5, false, INK);
-  } else {
-    const maintText = `Ongoing monthly maintenance is available at the standard rate of ₹2,000.00 per month (plus applicable GST) upon mutual written election. Maintenance is not automatically active and requires a separate written confirmation or maintenance addendum upon completion of the free support period.`;
-    y = drawText(maintText, MARGIN, y, 7.5, false, MUTED);
+  const maintText = sup.maintenance_included
+    ? `The Client has elected ongoing application maintenance at the agreed rate of ${sup.maintenance_rate_formatted || '₹2,000.00'} per month (plus applicable GST). This covers periodic application health monitoring, compatible dependency updates, and basic operational troubleshooting. It excludes new feature development, domain renewal, and cloud hosting costs. Maintenance may be cancelled by either party upon thirty (30) days written notice.`
+    : `Ongoing monthly maintenance is available at the standard rate of ₹2,000.00 per month (plus applicable GST) upon mutual written election. Maintenance is not automatically active and requires a separate written confirmation or maintenance addendum upon completion of the free support period.`;
+
+  const s8TotalHeight = 38 + measureTextHeight(maintText, 7.5) + 8;
+  // Always keep Section 8 heading and explanatory text together!
+  if (remainingSpace() < s8TotalHeight) {
+    addPage();
+    drawRunningHeader();
   }
+  drawSectionHeading(8, 'Monthly Maintenance Plan', s8TotalHeight - 38);
+  y = drawText(maintText, MARGIN, y, 7.5, false, sup.maintenance_included ? INK : MUTED);
   y -= 8;
 
   // --- SECTION 9: STANDARD TERMS & CONDITIONS ---
-  drawSectionHeading(9, 'Terms and Conditions');
   const clauses = snapshot.clauses || {};
   const termsList = [
     { title: 'Intellectual Property Ownership', content: clauses.section_11_intellectual_property },
@@ -606,8 +805,30 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
     { title: 'Dispute Resolution & Governing Law', content: clauses.section_17_dispute_resolution },
   ];
 
+  const firstTermTitleH = measureTextHeight(termsList[0].title, 8, true);
+  const firstTermMinH = 38 + firstTermTitleH + 25;
+  if (remainingSpace() < firstTermMinH) {
+    addPage();
+    drawRunningHeader();
+  }
+  drawSectionHeading(9, 'Terms and Conditions', firstTermMinH - 38);
+
   for (const term of termsList) {
-    ensureSpace(45);
+    const titleH = measureTextHeight(term.title, 8, true);
+    const contentH = measureTextHeight(term.content || '', 7, false, CONTENT_WIDTH - 4);
+    const fullTermH = titleH + contentH + 5;
+
+    // Keep individual clause intact if it can fit on a fresh page
+    if (fullTermH <= FRESH_PAGE_USABLE_HEIGHT) {
+      if (remainingSpace() < fullTermH) {
+        addPage();
+        drawRunningHeader();
+      }
+    } else if (remainingSpace() < titleH + 30) {
+      addPage();
+      drawRunningHeader();
+    }
+
     y = drawText(term.title, MARGIN, y, 8, true, INK);
     y = drawText(term.content || '', MARGIN + 4, y, 7, false, INK);
     y -= 5;
@@ -615,21 +836,39 @@ export async function renderSoftwareContractPdf(snapshot, { companyLogo = null }
   y -= 8;
 
   // Special Terms if any
-  if (snapshot.special_terms) {
-    ensureSpace(35);
+  if (snapshot.special_terms?.trim()) {
+    const spTitleH = measureTextHeight('Special Agreed Terms & Conditions:', 8, true);
+    const spContentH = measureTextHeight(snapshot.special_terms, 7, false, CONTENT_WIDTH - 4);
+    const spTotalH = spTitleH + spContentH + 8;
+    if (spTotalH <= FRESH_PAGE_USABLE_HEIGHT && remainingSpace() < spTotalH) {
+      addPage();
+      drawRunningHeader();
+    } else if (remainingSpace() < spTitleH + 30) {
+      addPage();
+      drawRunningHeader();
+    }
     y = drawText('Special Agreed Terms & Conditions:', MARGIN, y, 8, true, INK);
     y = drawText(snapshot.special_terms, MARGIN + 4, y, 7, false, INK);
     y -= 8;
   }
 
   // --- SECTION 10: ACCEPTANCE & SIGNATURES ---
-  ensureSpace(160);
-  drawSectionHeading(10, 'Acceptance & Execution');
-  y = drawText(snapshot.clauses?.section_18_signatures || 'IN WITNESS WHEREOF, the Parties hereto have caused this Agreement to be duly executed by their authorized representatives as of the dates set forth below:', MARGIN, y, 7.5, false, INK);
+  const sigIntro = snapshot.clauses?.section_18_signatures || 'IN WITNESS WHEREOF, the Parties hereto have caused this Software Development Services Agreement to be duly executed by their authorized representatives as of the date(s) set forth below. Each signatory warrants that they possess full power and legal authority to bind their respective organization.\nGenerating or downloading this document in draft form does not constitute an executed contract; both Parties must formally sign to execute this Agreement.';
+  const sigIntroH = measureTextHeight(sigIntro, 7.5, false, CONTENT_WIDTH);
+  const sigBoxH = 95;
+  const legalNoteH = measureTextHeight('Note: Generating or downloading this PDF document does not constitute formal execution or proof of signature. Both parties must execute this Agreement via verified signature before software development commencement.', 6, false, CONTENT_WIDTH);
+  const s10TotalHeight = 38 + sigIntroH + 12 + sigBoxH + 12 + legalNoteH + 8;
+
+  // Keep entire Section 10 together (heading + intro + both signature boxes + note)
+  if (remainingSpace() < s10TotalHeight) {
+    addPage();
+    drawRunningHeader();
+  }
+  drawSectionHeading(10, 'Acceptance & Execution', s10TotalHeight - 38);
+  y = drawText(sigIntro, MARGIN, y, 7.5, false, INK);
   y -= 12;
 
   const sigBoxW = (CONTENT_WIDTH - 20) / 2;
-  const sigBoxH = 95;
 
   // Nextora Creations Signatory Block
   page.drawRectangle({

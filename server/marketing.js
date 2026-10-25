@@ -5,6 +5,7 @@ import { audit } from './audit.js';
 import { allocateNumber, previewNumber } from './numbering.js';
 import { percentOf, roundDiv, BP_PER_UNIT } from './money.js';
 import { formatMinor } from './words.js';
+import { requireWriter } from './service.js';
 
 /* -------------------------------------------------------- Default Clauses */
 
@@ -460,7 +461,7 @@ export async function createAgreement(db, actor, input) {
     const { rows } = await tx.query(`
       INSERT INTO inv.influencer_agreements (
         id, contract_number, influencer_id, title, brand_name, product_name, version,
-        status, commission_basis_points, commission_basis, custom_basis_description,
+        status, branding_mode, commission_basis_points, commission_basis, custom_basis_description,
         product_tax_mode, commission_tax_terms, influencer_gst_registered, influencer_gstin,
         withholding_tax_rate_bp, withholding_section, start_date, end_date, is_indefinite,
         payment_frequency, payment_due_days, minimum_payout_minor, deliverables,
@@ -468,16 +469,17 @@ export async function createAgreement(db, actor, input) {
         created_by, created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, 1,
-        'DRAFT', $7, $8, $9,
-        $10, $11, $12, $13,
-        $14, $15, $16, $17, $18,
-        $19, $20, $21, $22,
-        $23, $24, $25, $26, $27,
-        $28, now(), now()
+        'DRAFT', $7, $8, $9, $10,
+        $11, $12, $13, $14,
+        $15, $16, $17, $18, $19,
+        $20, $21, $22, $23,
+        $24, $25, $26, $27, $28,
+        $29, now(), now()
       ) RETURNING *
     `, [
       id, allocated.number, input.influencer_id, input.title || 'Influencer Marketing & Revenue-Sharing Agreement — Nextora POS',
       input.brand_name || 'Nextora Creations', input.product_name || 'Nextora POS',
+      input.branding_mode || 'BOTH',
       input.commission_basis_points, input.commission_basis || 'NET_SALES_EX_GST', input.custom_basis_description || '',
       input.product_tax_mode || 'EXCLUSIVE', input.commission_tax_terms || 'EXCLUSIVE',
       input.influencer_gst_registered ? 1 : 0, input.influencer_gstin || '',
@@ -535,8 +537,9 @@ export async function updateAgreementDraft(db, actor, id, input) {
       payment_frequency = $16, payment_due_days = $17, minimum_payout_minor = $18,
       deliverables = $19, custom_clauses = $20, special_terms = $21,
       signatory_name = $22, signatory_title = $23, influencer_signatory_name = $24,
+      branding_mode = $25,
       updated_at = now()
-    WHERE id = $25
+    WHERE id = $26
     RETURNING *
   `, [
     input.title || existing.title,
@@ -563,6 +566,7 @@ export async function updateAgreementDraft(db, actor, id, input) {
     input.signatory_name || existing.signatory_name,
     input.signatory_title || existing.signatory_title,
     input.influencer_signatory_name || existing.influencer_signatory_name,
+    input.branding_mode || existing.branding_mode || 'BOTH',
     id
   ]);
 
@@ -612,6 +616,14 @@ export async function transitionAgreementStatus(db, actor, id, { action, reason 
     newStatus = 'TERMINATED';
     addField('terminated_at', new Date().toISOString());
     addField('termination_reason', reason || note || 'Terminated by administrator');
+  } else if (action === 'ARCHIVE') {
+    assert(existing.status !== 'ARCHIVED', 400, 'Agreement is already archived.', 'ALREADY_ARCHIVED');
+    newStatus = 'ARCHIVED';
+  } else if (action === 'CANCEL') {
+    assert(existing.status !== 'CANCELLED', 400, 'Agreement is already cancelled.', 'ALREADY_CANCELLED');
+    newStatus = 'CANCELLED';
+    addField('terminated_at', new Date().toISOString());
+    addField('termination_reason', reason || note || 'Agreement cancelled');
   } else {
     throw new HttpError(400, `Unknown transition action ${action}`, 'UNKNOWN_ACTION');
   }
@@ -633,6 +645,51 @@ export async function transitionAgreementStatus(db, actor, id, { action, reason 
   });
 
   return rows[0];
+}
+
+export async function deleteDraftAgreement(db, actor, id) {
+  requireWriter(actor);
+  const existing = await getAgreement(db, id);
+  assert(['DRAFT', 'PENDING_APPROVAL'].includes(existing.status), 409,
+    `Only unexecuted draft agreements can be deleted (current status: ${existing.status}). Please cancel or archive finalized contracts instead.`,
+    'NOT_DELETABLE');
+
+  // Check if any sales attributions reference this agreement
+  const { rows: attrRows } = await db.query('SELECT count(*)::int AS total FROM inv.influencer_attributions WHERE agreement_id = $1', [id]);
+  assert(Number(attrRows[0]?.total || 0) === 0, 409,
+    'This agreement has attributed customer sales or commissions and cannot be deleted.', 'AGREEMENT_IN_USE');
+
+  await db.query('DELETE FROM inv.influencer_agreements WHERE id = $1', [id]);
+  await audit(db, 'AGREEMENT_DRAFT_DELETED', {
+    actorId: actor.id,
+    entityType: 'AGREEMENT',
+    entityId: id,
+    metadata: { contract_number: existing.contract_number },
+  });
+  return { deleted: true, contract_number: existing.contract_number };
+}
+
+export async function deleteInfluencer(db, actor, id) {
+  requireWriter(actor);
+  const { rows: infRows } = await db.query('SELECT * FROM inv.influencers WHERE id = $1', [id]);
+  assert(infRows[0], 404, 'Influencer not found.', 'NOT_FOUND');
+
+  const { rows: agrRows } = await db.query('SELECT count(*)::int AS total FROM inv.influencer_agreements WHERE influencer_id = $1', [id]);
+  assert(Number(agrRows[0]?.total || 0) === 0, 409,
+    'This creator has existing contracts and cannot be deleted. You can archive the influencer instead.', 'INFLUENCER_IN_USE');
+
+  const { rows: attrRows } = await db.query('SELECT count(*)::int AS total FROM inv.influencer_attributions WHERE influencer_id = $1', [id]);
+  assert(Number(attrRows[0]?.total || 0) === 0, 409,
+    'This creator has tracked customer sales attributions and cannot be deleted. You can archive the influencer instead.', 'INFLUENCER_IN_USE');
+
+  await db.query('DELETE FROM inv.influencers WHERE id = $1', [id]);
+  await audit(db, 'INFLUENCER_DELETED', {
+    actorId: actor.id,
+    entityType: 'INFLUENCER',
+    entityId: id,
+    metadata: { legal_name: infRows[0].legal_name },
+  });
+  return { deleted: true, legal_name: infRows[0].legal_name };
 }
 
 export async function duplicateAgreement(db, actor, id) {
@@ -740,6 +797,7 @@ export async function buildContractSnapshot(db, agreementId) {
     version: agreement.version,
     status: agreement.status,
     title: agreement.title,
+    branding_mode: agreement.branding_mode || 'BOTH',
     brand_name: agreement.brand_name || 'Nextora Creations',
     product_name: agreement.product_name || 'Nextora POS',
     created_at: agreement.created_at,

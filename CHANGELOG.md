@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.5] - 2026-10-26
+
+### Fixed
+- **Software Services Contract PDF Layout & Preview Parity**:
+  - Implemented shared canonical HTML renderer (`server/software-contract-template.js`) providing a single source of truth for both on-screen contract preview and standalone HTML document export.
+  - Replaced divergent 8-section preview template in `src/views/software-contract-editor.js` with canonical 10-section renderer matching the PDF output.
+  - Dynamically recalculate and reconstruct fresh snapshot for `DRAFT` contracts during preview and PDF generation to guarantee preview and download reflect latest edits.
+- **Centered Company Logo & Header Structure**:
+  - Horizontally centered Nextora Creations company logo relative to page width in both PDF (`(A4.width - scaled.width) / 2`) and HTML (`nc-logo-wrap`).
+  - Constrained logo to max 140 CSS px / pt width and 56 pt / 60 px height with `object-fit: contain` and strict aspect ratio preservation.
+  - Centered company name, address, contact details, and GSTIN below logo, followed by 4-column metadata card and thin cyan divider line.
+  - Added clean uppercase text fallback if logo asset is unavailable.
+- **Table Formatting & Overflow Prevention**:
+  - Wrapped Milestone Name and Trigger/Deliverable columns dynamically in Section 5 with multi-line height calculation, eliminating text overlap.
+  - Enforced minimum follow-up height checks in `drawSectionHeading` to prevent orphaned headings (e.g. Section 8 Monthly Maintenance Plan separated from its terms).
+  - Wrapped Section 10 legal footnote to page content width to prevent margin clipping.
+- **Document Export Endpoints**:
+  - Added `GET /api/marketing/software-agreements/:id/html` for standalone contract HTML downloads with full stylesheet.
+
+### Added
+- **Automated Regression Test Suite Expansion**:
+  - Added integration test validating canonical HTML preview, centered company logo parity, reference contract `NC/SDA/2026-27/0001` commercial calculations (₹20,000 base, ₹2,000 advance, ₹18,000 balance), Section 5 wrapping, and multi-page vector PDF generation (176 total passing tests).
+
 ## [1.1.4] - 2026-10-25
 
 ### Fixed

@@ -480,11 +480,14 @@ export const deliverableSchema = z.object({
   performance_metrics: clean(300).default(''),
 }).strict();
 
+export const BRANDING_MODES = ['BOTH', 'COMPANY_ONLY', 'PRODUCT_ONLY', 'TEXT_ONLY'];
+
 export const agreementDraftObject = z.object({
   influencer_id: uuid,
   title: required(200).default('Influencer Marketing & Revenue-Sharing Agreement — Nextora POS'),
   brand_name: required(100).default('Nextora Creations'),
   product_name: required(100).default('Nextora POS'),
+  branding_mode: z.enum(BRANDING_MODES).default('BOTH'),
   commission_basis_points: z.number().int().min(1, 'Commission percentage must be greater than 0%').max(10000, 'Commission percentage cannot exceed 100%'),
   commission_basis: z.enum(COMMISSION_BASES).default('NET_SALES_EX_GST'),
   custom_basis_description: clean(500).default(''),
@@ -512,6 +515,7 @@ export const agreementUpdateSchema = z.object({
   title: clean(200).optional(),
   brand_name: clean(100).optional(),
   product_name: clean(100).optional(),
+  branding_mode: z.enum(BRANDING_MODES).optional(),
   commission_basis_points: z.number().int().min(1, 'Commission percentage must be greater than 0%').max(10000, 'Commission percentage cannot exceed 100%').optional(),
   commission_basis: z.enum(COMMISSION_BASES).optional(),
   custom_basis_description: clean(500).optional(),
@@ -544,7 +548,7 @@ export const agreementDraftSchema = agreementDraftObject
   'Please specify the custom calculation basis description');
 
 export const agreementStatusActionSchema = z.object({
-  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'TERMINATE', 'RENEW']),
+  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'TERMINATE', 'RENEW', 'ARCHIVE', 'CANCEL']),
   reason: clean(500).default(''),
   note: clean(500).default(''),
   date: z.union([day, z.literal('')]).default(''),
@@ -610,6 +614,7 @@ export const softwareAgreementCreateSchema = z.object({
   signatory_designation: clean(120).default(''),
 
   title: clean(200).default('Software Development Services Agreement'),
+  branding_mode: z.enum(BRANDING_MODES).default('COMPANY_ONLY'),
   service_category: clean(100).default('Custom software development'),
   service_category_custom: clean(100).default(''),
   service_description: multiline(4000).default(''),
@@ -671,7 +676,7 @@ export const softwareAgreementCreateSchema = z.object({
 export const softwareAgreementUpdateSchema = softwareAgreementCreateSchema.partial();
 
 export const softwareAgreementStatusActionSchema = z.object({
-  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'REJECT', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'COMPLETE', 'TERMINATE', 'CANCEL']),
+  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'REJECT', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'COMPLETE', 'TERMINATE', 'CANCEL', 'ARCHIVE']),
   reason: clean(500).default(''),
   note: clean(500).default(''),
   date: z.union([day, z.literal('')]).default(''),

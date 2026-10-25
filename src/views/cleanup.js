@@ -409,18 +409,30 @@ export const render = async (container, params, ctx) => {
                     <th class="p-2">Format</th>
                     <th class="p-2">Filename</th>
                     <th class="p-2 text-right">Size</th>
+                    <th class="p-2 text-center">Verification</th>
                     <th class="p-2">SHA-256 Checksum</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-outline">
-                  ${Object.entries(files).map(([key, f]) => `
+                  ${Object.entries(files).map(([key, f]) => {
+                    const label = key === 'json' ? 'Structured JSON'
+                      : key === 'xlsx' ? 'Excel (.xlsx)'
+                      : key === 'csv_master' ? 'Master CSV'
+                      : key === 'csv_items' ? 'Line Items CSV'
+                      : 'Compiled PDF';
+                    return `
                     <tr>
-                      <td class="p-2 uppercase font-bold text-cyan-accent">${esc(key)}</td>
+                      <td class="p-2 font-bold text-cyan-accent text-xs">${esc(label)}</td>
                       <td class="p-2">${esc(f.filename)}</td>
                       <td class="p-2 text-right">${formatBytes(f.size_bytes)}</td>
+                      <td class="p-2 text-center">
+                        <span class="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                          ${icon('check', '!text-[12px]')} Validated
+                        </span>
+                      </td>
                       <td class="p-2 text-[10px] text-on-surface-variant break-all">${esc(f.sha256)}</td>
                     </tr>
-                  `).join('')}
+                  `;}).join('')}
                 </tbody>
               </table>
             </div>

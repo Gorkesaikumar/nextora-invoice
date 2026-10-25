@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import ExcelJS from 'exceljs';
 import { PDFDocument } from 'pdf-lib';
 import { assert, HttpError } from './domain.js';
@@ -55,6 +56,95 @@ function retrieveVerificationToken(token) {
     throw new HttpError(400, 'Export verification token has expired. Please re-run the export.', 'EXPIRED_VERIFICATION_TOKEN');
   }
   return item.manifest;
+}
+
+export function resolveSafeExportDir(category, stamp, customDir = null) {
+  if (customDir) {
+    try {
+      mkdirSync(customDir, { recursive: true });
+      return customDir;
+    } catch { /* try safe locations */ }
+  }
+
+  const subfolder = `cleanup-${category.toLowerCase()}-${stamp}`;
+
+  // 1. process.env.EXPORTS_DIR
+  if (process.env.EXPORTS_DIR) {
+    try {
+      const p = join(process.env.EXPORTS_DIR, subfolder);
+      mkdirSync(p, { recursive: true });
+      return p;
+    } catch { /* fallback */ }
+  }
+
+  // 2. userData relative to DATABASE_PATH
+  if (process.env.DATABASE_PATH && process.env.DATABASE_PATH !== ':memory:') {
+    try {
+      const p = join(dirname(process.env.DATABASE_PATH), 'exports', subfolder);
+      mkdirSync(p, { recursive: true });
+      return p;
+    } catch { /* fallback */ }
+  }
+
+  // 3. APPDATA / HOME
+  const appData = process.env.APPDATA || (process.platform === 'darwin' ? join(process.env.HOME || '', 'Library', 'Application Support') : join(process.env.HOME || '', '.config'));
+  if (appData) {
+    try {
+      const p = join(appData, 'nextora-invoicing', 'exports', subfolder);
+      mkdirSync(p, { recursive: true });
+      return p;
+    } catch { /* fallback */ }
+  }
+
+  // 4. cwd data/exports
+  try {
+    const p = resolve(process.cwd(), 'data', 'exports', subfolder);
+    mkdirSync(p, { recursive: true });
+    return p;
+  } catch { /* fallback */ }
+
+  // 5. OS tempdir
+  const tmpPath = join(tmpdir(), 'nextora-invoicing', 'exports', subfolder);
+  mkdirSync(tmpPath, { recursive: true });
+  return tmpPath;
+}
+
+export function resolveSafeBackupDir(customDir = null) {
+  if (customDir) {
+    try {
+      mkdirSync(customDir, { recursive: true });
+      return customDir;
+    } catch { /* fallback */ }
+  }
+  if (process.env.BACKUPS_DIR) {
+    try {
+      mkdirSync(process.env.BACKUPS_DIR, { recursive: true });
+      return process.env.BACKUPS_DIR;
+    } catch { /* fallback */ }
+  }
+  if (process.env.DATABASE_PATH && process.env.DATABASE_PATH !== ':memory:') {
+    try {
+      const p = join(dirname(process.env.DATABASE_PATH), 'backups');
+      mkdirSync(p, { recursive: true });
+      return p;
+    } catch { /* fallback */ }
+  }
+  const appData = process.env.APPDATA;
+  if (appData) {
+    try {
+      const p = join(appData, 'nextora-invoicing', 'backups');
+      mkdirSync(p, { recursive: true });
+      return p;
+    } catch { /* fallback */ }
+  }
+  try {
+    const p = resolve(process.cwd(), 'data', 'backups');
+    mkdirSync(p, { recursive: true });
+    return p;
+  } catch { /* fallback */ }
+  const tmpPath = join(tmpdir(), 'nextora-invoicing', 'backups');
+  mkdirSync(tmpPath, { recursive: true });
+  return tmpPath;
 }
 
 /**
@@ -427,8 +517,7 @@ export async function generateExportArchive(db, { category, ids = [], destinatio
     'INELIGIBLE_RECORDS');
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const baseDir = destinationDir || resolve(process.cwd(), 'data', 'exports', `cleanup-${category.toLowerCase()}-${stamp}`);
-  mkdirSync(baseDir, { recursive: true });
+  const baseDir = resolveSafeExportDir(category, stamp, destinationDir);
 
   const manifest = {
     category,
@@ -445,10 +534,16 @@ export async function generateExportArchive(db, { category, ids = [], destinatio
     await exportInvoicesBundle(db, ids, baseDir, manifest);
   }
 
-  // Verify the generated files
-  const verification = verifyExportManifest(manifest);
+  // Write initial manifest.json
+  const manifestPath = join(baseDir, 'manifest.json');
+  manifest.manifest_path = manifestPath;
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+
+  // Verify the generated files across all 4 formats (JSON, XLSX, CSV, PDF)
+  const verification = await verifyExportManifest(manifest);
   manifest.verified = true;
   manifest.verification_time = new Date().toISOString();
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
 
   // Create token
   const token = storeVerificationToken(manifest);
@@ -794,10 +889,11 @@ async function exportInvoicesBundle(db, ids, baseDir, manifest) {
 }
 
 /**
- * Validates export files against manifest: existence, non-zero size,
- * JSON parse, checksum verification, record count matching.
+ * Validates export files against manifest across all four formats:
+ * JSON schema & record count, ExcelJS workbook & sheets, CSV row counts,
+ * pdf-lib document page count, and SHA-256 cryptographic checksums.
  */
-export function verifyExportManifest(manifest) {
+export async function verifyExportManifest(manifest) {
   assert(manifest && typeof manifest === 'object', 400, 'Invalid manifest.', 'VALIDATION_ERROR');
   const files = manifest.files || {};
   const requiredKeys = ['json', 'csv_master', 'csv_items', 'xlsx', 'pdf'];
@@ -820,7 +916,7 @@ export function verifyExportManifest(manifest) {
     }
   }
 
-  // Parse JSON file to confirm structured integrity
+  // 1. Parse JSON file to confirm structured integrity
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(files.json.path, 'utf8'));
@@ -834,12 +930,56 @@ export function verifyExportManifest(manifest) {
       'COUNT_MISMATCH');
   }
 
-  // Confirm all document IDs are represented
+  // Confirm all document IDs are represented in JSON
   const exportedIdSet = new Set(items.map(it => (it.quotation || it.invoice)?.id));
   for (const id of manifest.document_ids) {
     if (!exportedIdSet.has(id)) {
       throw new HttpError(422, `Document ID ${id} is missing from the export archive.`, 'INCOMPLETE_EXPORT');
     }
+  }
+
+  // 2. Reopen and validate Excel workbook (.xlsx)
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(files.xlsx.path);
+    const masterSheet = workbook.getWorksheet(1);
+    const itemsSheet = workbook.getWorksheet(2);
+    if (!masterSheet || !itemsSheet) {
+      throw new Error('Workbook is missing required Master or Line Items worksheets.');
+    }
+    if (masterSheet.actualRowCount < manifest.record_count + 1) {
+      throw new Error(`Master worksheet rows (${masterSheet.actualRowCount}) do not cover record count.`);
+    }
+  } catch (err) {
+    throw new HttpError(422, `Excel archive (.xlsx) validation failed: ${err.message}`, 'CORRUPT_EXPORT_FILE');
+  }
+
+  // 3. Re-parse Master and Items CSV
+  try {
+    const masterText = readFileSync(files.csv_master.path, 'utf8');
+    const masterLines = masterText.split(/\r?\n/).filter(line => line.trim().length > 0);
+    if (masterLines.length < manifest.record_count + 1) {
+      throw new Error(`Master CSV row count (${masterLines.length - 1}) less than expected records (${manifest.record_count}).`);
+    }
+
+    const itemsText = readFileSync(files.csv_items.path, 'utf8');
+    const itemLines = itemsText.split(/\r?\n/).filter(line => line.trim().length > 0);
+    if (itemLines.length < 1) {
+      throw new Error('Line items CSV is empty.');
+    }
+  } catch (err) {
+    throw new HttpError(422, `CSV archive validation failed: ${err.message}`, 'CORRUPT_EXPORT_FILE');
+  }
+
+  // 4. Validate compiled PDF document
+  try {
+    const pdfBytes = readFileSync(files.pdf.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    if (pdfDoc.getPageCount() < manifest.record_count) {
+      throw new Error(`PDF page count (${pdfDoc.getPageCount()}) is less than record count (${manifest.record_count}).`);
+    }
+  } catch (err) {
+    throw new HttpError(422, `PDF archive validation failed: ${err.message}`, 'CORRUPT_EXPORT_FILE');
   }
 
   return {
@@ -850,6 +990,7 @@ export function verifyExportManifest(manifest) {
       filename: f.filename,
       size_bytes: f.size_bytes,
       sha256: f.sha256,
+      verified: true,
     })),
   };
 }
@@ -897,8 +1038,7 @@ export async function executeCleanup(db, actor, {
 
   // 1. Pre-deletion safety backup of live database
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const targetDir = backupDir || resolve(process.cwd(), 'data', 'backups');
-  mkdirSync(targetDir, { recursive: true });
+  const targetDir = resolveSafeBackupDir(backupDir);
   const safetyBackupPath = join(targetDir, `pre-cleanup-safety-${category.toLowerCase()}-${stamp}.sqlite`);
 
   let backupResult = null;

@@ -20,8 +20,8 @@ import { STATE_LIST } from './states.js';
 import { GST_RATE_SLABS } from './gst.js';
 import { audit } from './audit.js';
 import {
-  createClient, updateClient, setClientStatus, listClients, getClient, clientWarnings,
-  createProduct, updateProduct, listProducts, updateSettings, saveLogo, settings, logoBytes, requireWriter,
+  createClient, updateClient, deleteClient, setClientStatus, listClients, getClient, clientWarnings,
+  createProduct, updateProduct, deleteProduct, listProducts, updateSettings, saveLogo, settings, logoBytes, requireWriter,
   requireManager,
 } from './service.js';
 import {
@@ -57,18 +57,19 @@ import {
   inspectCleanupData, previewCleanup, generateExportArchive, executeCleanup,
 } from './cleanup.js';
 import {
-  listInfluencers, getInfluencer, createInfluencer, updateInfluencer, checkInfluencerDuplicates,
+  listInfluencers, getInfluencer, createInfluencer, updateInfluencer, checkInfluencerDuplicates, deleteInfluencer,
   listAgreements, getAgreement, createAgreement, updateAgreementDraft, transitionAgreementStatus,
-  duplicateAgreement, buildContractSnapshot, recordPdfGenerated, marketingDashboard,
+  duplicateAgreement, deleteDraftAgreement, buildContractSnapshot, recordPdfGenerated, marketingDashboard,
   saveBrandLogo, brandLogoBytes, getBrandAssetsSummary,
 } from './marketing.js';
 import { renderContractPdf } from './contract-pdf.js';
 import {
   listSoftwareAgreements, getSoftwareAgreement, createSoftwareAgreement, updateSoftwareAgreementDraft,
-  transitionSoftwareAgreementStatus, duplicateSoftwareAgreement, buildSoftwareContractSnapshot,
+  transitionSoftwareAgreementStatus, duplicateSoftwareAgreement, deleteDraftSoftwareAgreement, buildSoftwareContractSnapshot,
   recordSoftwarePdfGenerated, calculateSoftwareContractFinancials, DEFAULT_SERVICE_CATEGORIES,
 } from './software-contracts.js';
 import { renderSoftwareContractPdf } from './software-contract-pdf.js';
+import { renderSoftwareContractHtml } from './software-contract-template.js';
 import {
   generateSalesTemplate, parseAndValidateSalesFile, confirmSalesImport, listSalesBatches,
   getSalesDashboardMetrics, listSalesRecords, updateSaleRecordStatus, bulkUpdateSalesStatus,
@@ -546,6 +547,7 @@ export function createAPI(db, config) {
         const id = uuid.parse(clientMatch[1]);
         if (!clientMatch[2] && method === 'GET') return json(await getClient(db, id));
         if (!clientMatch[2] && method === 'PATCH') return json({ client: await updateClient(db, actor, id, await body(request, clientSchema)) });
+        if (!clientMatch[2] && method === 'DELETE') return json(await deleteClient(db, actor, id));
         if (clientMatch[2] === 'status' && method === 'POST') {
           const input = await body(request, z.object({ status: z.enum(['ACTIVE', 'ARCHIVED']) }).strict());
           return json({ client: await setClientStatus(db, actor, id, input.status) });
@@ -562,6 +564,9 @@ export function createAPI(db, config) {
       const productMatch = path.match(/^\/api\/products\/([^/]+)$/);
       if (productMatch && method === 'PATCH') {
         return json({ product: await updateProduct(db, actor, uuid.parse(productMatch[1]), await body(request, productSchema)) });
+      }
+      if (productMatch && method === 'DELETE') {
+        return json(await deleteProduct(db, actor, uuid.parse(productMatch[1])));
       }
 
       /* -------------------------------------------------------- quotations */
@@ -1182,6 +1187,9 @@ export function createAPI(db, config) {
           const input = await body(request, influencerSchema.partial());
           return json(await updateInfluencer(db, actor, id, input));
         }
+        if (method === 'DELETE') {
+          return json(await deleteInfluencer(db, actor, id));
+        }
       }
 
       if (path === '/api/marketing/agreements' && method === 'GET') {
@@ -1213,6 +1221,12 @@ export function createAPI(db, config) {
         if (!action && method === 'PATCH') {
           const input = await body(request, agreementUpdateSchema);
           return json({ agreement: await updateAgreementDraft(db, actor, id, input) });
+        }
+        if (!action && method === 'DELETE') {
+          return json(await deleteDraftAgreement(db, actor, id));
+        }
+        if (action === 'archive' && method === 'POST') {
+          return json({ agreement: await transitionAgreementStatus(db, actor, id, { action: 'ARCHIVE', reason: 'Archived by administrator' }) });
         }
         if (action === 'status' && method === 'POST') {
           const input = await body(request, agreementStatusActionSchema);
@@ -1367,6 +1381,12 @@ export function createAPI(db, config) {
           const input = await body(request, softwareAgreementUpdateSchema);
           return json({ agreement: await updateSoftwareAgreementDraft(db, actor, id, input) });
         }
+        if (!action && method === 'DELETE') {
+          return json(await deleteDraftSoftwareAgreement(db, actor, id));
+        }
+        if (action === 'archive' && method === 'POST') {
+          return json({ agreement: await transitionSoftwareAgreementStatus(db, actor, id, { action: 'ARCHIVE', reason: 'Archived by administrator' }) });
+        }
         if (action === 'status' && method === 'POST') {
           const input = await body(request, softwareAgreementStatusActionSchema);
           return json({ agreement: await transitionSoftwareAgreementStatus(db, actor, id, input) });
@@ -1375,13 +1395,38 @@ export function createAPI(db, config) {
           return json({ agreement: await duplicateSoftwareAgreement(db, actor, id) }, 201);
         }
         if (action === 'preview' && method === 'GET') {
-          return json({ snapshot: await buildSoftwareContractSnapshot(db, id) });
+          const snapshot = await buildSoftwareContractSnapshot(db, id);
+          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
+          const logoDataUri = companyLogo?.bytes ? `data:${companyLogo.mimeType || 'image/png'};base64,${Buffer.from(companyLogo.bytes).toString('base64')}` : '';
+          const html = renderSoftwareContractHtml(snapshot, { logoDataUri, standalone: false });
+          return json({ snapshot, html, logoDataUri });
+        }
+        if (action === 'html' && method === 'GET') {
+          const agreement = await getSoftwareAgreement(db, id);
+          const snapshot = (agreement.status === 'DRAFT' || !agreement.snapshot)
+            ? await buildSoftwareContractSnapshot(db, id)
+            : (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot);
+          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
+          const logoDataUri = companyLogo?.bytes ? `data:${companyLogo.mimeType || 'image/png'};base64,${Buffer.from(companyLogo.bytes).toString('base64')}` : '';
+          const html = renderSoftwareContractHtml(snapshot, { logoDataUri, standalone: true });
+          const safeContractNum = (agreement.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+          return new Response(html, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Type': 'text/html; charset=utf-8',
+              'Content-Disposition': `inline; filename="${safeContractNum}_Software_Development_Agreement.html"`,
+            },
+          });
         }
         if (action === 'generate-pdf' && method === 'POST') {
           const snapshot = await buildSoftwareContractSnapshot(db, id);
           await recordSoftwarePdfGenerated(db, actor, id, snapshot);
-          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
-          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo });
+          const [companyLogo, productLogo] = await Promise.all([
+            brandLogoBytes(db, 'company_logo').catch(() => null),
+            brandLogoBytes(db, 'product_logo').catch(() => null),
+          ]);
+          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo, productLogo });
           return json({
             success: true,
             contract_number: snapshot.contract_number,
@@ -1391,12 +1436,15 @@ export function createAPI(db, config) {
         }
         if (action === 'pdf' && method === 'GET') {
           const agreement = await getSoftwareAgreement(db, id);
-          const snapshot = agreement.snapshot
-            ? (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot)
-            : await buildSoftwareContractSnapshot(db, id);
+          const snapshot = (agreement.status === 'DRAFT' || !agreement.snapshot)
+            ? await buildSoftwareContractSnapshot(db, id)
+            : (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot);
 
-          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
-          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo });
+          const [companyLogo, productLogo] = await Promise.all([
+            brandLogoBytes(db, 'company_logo').catch(() => null),
+            brandLogoBytes(db, 'product_logo').catch(() => null),
+          ]);
+          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo, productLogo });
           const safeContractNum = (agreement.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
           const isView = url.searchParams.get('view') === 'true';
 
@@ -1646,6 +1694,12 @@ export function createAPI(db, config) {
       if (error?.code === '23503') return json({ error: 'This record is still referenced and cannot be removed.', code: 'IN_USE' }, 409);
       if (error?.code === 'P0001' || /Immutable/i.test(error?.message || '')) {
         return json({ error: 'This document is part of the financial record and cannot be changed.', code: 'IMMUTABLE' }, 409);
+      }
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        return json({
+          error: 'Filesystem write permission denied. The application attempted to write to a protected directory. Please verify export folder permissions or choose a writable path.',
+          code: 'STORAGE_PERMISSION_DENIED',
+        }, 403);
       }
       // Never log request bodies, credentials, connection strings or document contents.
       console.error('Invoicing API failure', config.production

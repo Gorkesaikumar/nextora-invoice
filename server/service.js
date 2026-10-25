@@ -152,6 +152,35 @@ export async function setClientStatus(db, actor, id, status) {
   });
 }
 
+export async function deleteClient(db, actor, id) {
+  requireWriter(actor);
+  return db.transaction(async tx => {
+    const existing = (await tx.query('SELECT * FROM inv.clients WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    assert(existing, 404, 'That client does not exist.', 'NOT_FOUND');
+
+    const quotes = (await tx.query('SELECT count(*)::int AS total FROM inv.quotations WHERE client_id=$1', [id])).rows[0].total;
+    const invoices = (await tx.query('SELECT count(*)::int AS total FROM inv.invoices WHERE client_id=$1', [id])).rows[0].total;
+    const swContracts = (await tx.query('SELECT count(*)::int AS total FROM inv.software_agreements WHERE client_id=$1', [id])).rows[0].total;
+    const posCustomers = (await tx.query('SELECT count(*)::int AS total FROM inv.pos_customers WHERE client_id=$1', [id])).rows[0].total;
+
+    const totalRefs = quotes + invoices + swContracts + posCustomers;
+    if (totalRefs > 0) {
+      const parts = [];
+      if (quotes > 0) parts.push(`${quotes} quotation${quotes > 1 ? 's' : ''}`);
+      if (invoices > 0) parts.push(`${invoices} invoice${invoices > 1 ? 's' : ''}`);
+      if (swContracts > 0) parts.push(`${swContracts} contract${swContracts > 1 ? 's' : ''}`);
+      if (posCustomers > 0) parts.push(`${posCustomers} POS customer record${posCustomers > 1 ? 's' : ''}`);
+      throw new HttpError(409,
+        `This client cannot be permanently deleted because they have associated records (${parts.join(', ')}). Please archive the client instead.`,
+        'CLIENT_IN_USE');
+    }
+
+    await tx.query('DELETE FROM inv.clients WHERE id=$1', [id]);
+    await audit(tx, 'CLIENT_DELETED', { actorId: actor.id, entityType: 'CLIENT', entityId: id, metadata: { name: existing.name } });
+    return { deleted: true, name: existing.name };
+  });
+}
+
 /* ------------------------------------------------------------------ catalog */
 
 export async function listProducts(db, url) {
@@ -200,6 +229,33 @@ export async function updateProduct(db, actor, id, input) {
       input.license_duration_months, input.validity_notes]);
     await audit(tx, 'PRODUCT_UPDATED', { actorId: actor.id, entityType: 'PRODUCT', entityId: id });
     return (await tx.query('SELECT * FROM inv.products WHERE id=$1', [id])).rows[0];
+  });
+}
+
+export async function deleteProduct(db, actor, id) {
+  requireWriter(actor);
+  return db.transaction(async tx => {
+    const existing = (await tx.query('SELECT * FROM inv.products WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    assert(existing, 404, 'That catalog entry does not exist.', 'NOT_FOUND');
+
+    const quoteItems = (await tx.query('SELECT count(*)::int AS total FROM inv.quotation_items WHERE product_id=$1', [id])).rows[0].total;
+    const invoiceItems = (await tx.query('SELECT count(*)::int AS total FROM inv.invoice_items WHERE product_id=$1', [id])).rows[0].total;
+    const posPlans = (await tx.query('SELECT count(*)::int AS total FROM inv.pos_subscriptions WHERE product_id=$1', [id])).rows[0].total;
+
+    const totalRefs = quoteItems + invoiceItems + posPlans;
+    if (totalRefs > 0) {
+      const parts = [];
+      if (quoteItems > 0) parts.push(`${quoteItems} quotation item${quoteItems > 1 ? 's' : ''}`);
+      if (invoiceItems > 0) parts.push(`${invoiceItems} invoice item${invoiceItems > 1 ? 's' : ''}`);
+      if (posPlans > 0) parts.push(`${posPlans} POS customer subscription${posPlans > 1 ? 's' : ''}`);
+      throw new HttpError(409,
+        `This product cannot be permanently deleted because it is referenced in ${parts.join(', ')}. Please archive/deactivate it instead.`,
+        'PRODUCT_IN_USE');
+    }
+
+    await tx.query('DELETE FROM inv.products WHERE id=$1', [id]);
+    await audit(tx, 'PRODUCT_DELETED', { actorId: actor.id, entityType: 'PRODUCT', entityId: id, metadata: { name: existing.name } });
+    return { deleted: true, name: existing.name };
   });
 }
 

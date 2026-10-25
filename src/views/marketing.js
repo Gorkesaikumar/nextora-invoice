@@ -281,6 +281,18 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
               ],
               value: agreement.commission_basis,
             })}
+
+            ${field({
+              label: 'Contract Branding Mode', name: 'branding_mode',
+              options: [
+                { value: 'BOTH', label: 'Company & Product Logos (Default: Company on Left, Product on Right)' },
+                { value: 'COMPANY_ONLY', label: 'Company Logo Only' },
+                { value: 'PRODUCT_ONLY', label: 'Product Logo Only' },
+                { value: 'TEXT_ONLY', label: 'Text Only (No brand logo images)' },
+              ],
+              value: agreement.branding_mode || 'BOTH',
+              hint: 'Determines whether Company and Product logos appear in preview and downloaded contract PDF.',
+            })}
           </div>
 
           <div id="custom-basis-wrap" class="mt-3 ${agreement.commission_basis === 'CUSTOM' ? '' : 'hidden'}">
@@ -512,6 +524,7 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
       title: String(form.get('title') || '').trim(),
       brand_name: String(form.get('brand_name') || 'Nextora Creations').trim(),
       product_name: String(form.get('product_name') || 'Nextora POS').trim(),
+      branding_mode: String(form.get('branding_mode') || 'BOTH'),
       commission_basis_points: commissionBp,
       commission_basis: String(form.get('commission_basis') || 'NET_SALES_EX_GST'),
       custom_basis_description: String(form.get('custom_basis_description') || '').trim(),
@@ -773,7 +786,8 @@ async function renderInfluencers(container, params, ctx) {
                     <td>${statusBadge(row.status)}</td>
                     <td class="text-right whitespace-nowrap">
                       <button type="button" data-action="new-agreement-for" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Create Contract</button>
-                      <button type="button" data-action="edit-influencer" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Edit</button>
+                      <button type="button" data-action="edit-influencer" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Edit</button>
+                      <button type="button" data-action="delete-influencer" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.legal_name)}" class="text-xs text-red-600 hover:text-red-800">Delete</button>
                     </td>
                   </tr>
                 `).join('')}
@@ -810,6 +824,34 @@ async function renderInfluencers(container, params, ctx) {
 
   ctx.on('new-agreement-for', trigger => {
     agreementForm(ctx, null, trigger.dataset.id);
+  });
+
+  ctx.on('delete-influencer', trigger => {
+    const id = trigger.dataset.id;
+    const name = trigger.dataset.name;
+    const node = modal({
+      title: 'Delete Influencer',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Are you sure you want to permanently delete influencer <strong class="font-semibold">${esc(name)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">An influencer can only be deleted if they have zero associated contracts and zero imported sales attributions. Otherwise, update their status to INACTIVE or ARCHIVED.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Delete Influencer', action: 'confirm-delete-influencer-btn', variant: 'danger' })}
+      `,
+    });
+    node.querySelector('[data-action="confirm-delete-influencer-btn"]')?.addEventListener('click', async () => {
+      try {
+        await api.del(`/api/marketing/influencers/${id}`);
+        closeModal();
+        toast('Influencer deleted successfully.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
   });
 }
 
@@ -964,7 +1006,11 @@ async function renderAgreements(container, params, ctx) {
                         <a href="${previewHref}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Preview</a>
                         <button type="button" data-action="download-contract-pdf" data-url="${pdfUrl}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Download</button>
                         ${['DRAFT', 'PENDING_APPROVAL'].includes(row.status)
-                          ? `<button type="button" data-action="${isSoftware ? 'edit-draft-sw-agreement' : 'edit-draft-agreement'}" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Edit</button>`
+                          ? `<button type="button" data-action="${isSoftware ? 'edit-draft-sw-agreement' : 'edit-draft-agreement'}" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Edit</button>
+                             <button type="button" data-action="${isSoftware ? 'delete-draft-sw-agreement' : 'delete-draft-agreement'}" data-id="${esc(row.id)}" data-number="${esc(row.contract_number)}" class="text-xs text-red-600 hover:text-red-800 mr-2.5">Delete</button>`
+                          : ''}
+                        ${['ACCEPTED', 'SIGNED', 'ACTIVE', 'TERMINATED'].includes(row.status)
+                          ? `<button type="button" data-action="${isSoftware ? 'archive-sw-agreement' : 'archive-agreement'}" data-id="${esc(row.id)}" data-number="${esc(row.contract_number)}" class="text-xs text-on-surface-variant hover:text-on-surface mr-2.5">Archive</button>`
                           : ''}
                         <button type="button" data-action="${isSoftware ? 'duplicate-sw-agreement' : 'duplicate-agreement'}" data-id="${esc(row.id)}" class="text-xs text-on-surface-variant hover:text-on-surface">Copy</button>
                       </td>
@@ -1039,6 +1085,118 @@ async function renderAgreements(container, params, ctx) {
       ctx.navigate(`#/marketing/contracts/software/${res.agreement.id}/preview`);
     } catch (err) { toast(err.message, 'danger'); }
   });
+
+  ctx.on('delete-draft-agreement', trigger => {
+    const id = trigger.dataset.id;
+    const number = trigger.dataset.number;
+    const node = modal({
+      title: 'Delete Draft Agreement',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Are you sure you want to permanently delete draft agreement <strong class="font-mono">${esc(number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Only draft agreements without any imported sales attributions can be deleted. This action cannot be undone.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Delete Draft', action: 'confirm-delete-draft-table', variant: 'danger' })}
+      `,
+    });
+    node.querySelector('[data-action="confirm-delete-draft-table"]')?.addEventListener('click', async () => {
+      try {
+        await api.del(`/api/marketing/agreements/${id}`);
+        closeModal();
+        toast('Draft agreement deleted successfully.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
+
+  ctx.on('delete-draft-sw-agreement', trigger => {
+    const id = trigger.dataset.id;
+    const number = trigger.dataset.number;
+    const node = modal({
+      title: 'Delete Draft Software Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Are you sure you want to permanently delete draft software contract <strong class="font-mono">${esc(number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Only draft agreements can be deleted. This action cannot be undone.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Delete Draft', action: 'confirm-delete-sw-draft-table', variant: 'danger' })}
+      `,
+    });
+    node.querySelector('[data-action="confirm-delete-sw-draft-table"]')?.addEventListener('click', async () => {
+      try {
+        await api.del(`/api/marketing/software-agreements/${id}`);
+        closeModal();
+        toast('Draft software contract deleted successfully.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
+
+  ctx.on('archive-agreement', trigger => {
+    const id = trigger.dataset.id;
+    const number = trigger.dataset.number;
+    const node = modal({
+      title: 'Archive Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Archive contract <strong class="font-mono">${esc(number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Archived contracts remain in your historical audit records and reports but are marked as ARCHIVED.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Archive Contract', action: 'confirm-archive-agreement-table', variant: 'primary' })}
+      `,
+    });
+    node.querySelector('[data-action="confirm-archive-agreement-table"]')?.addEventListener('click', async () => {
+      try {
+        await api.post(`/api/marketing/agreements/${id}/archive`, {});
+        closeModal();
+        toast('Contract archived.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
+
+  ctx.on('archive-sw-agreement', trigger => {
+    const id = trigger.dataset.id;
+    const number = trigger.dataset.number;
+    const node = modal({
+      title: 'Archive Software Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Archive software contract <strong class="font-mono">${esc(number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant">Archived contracts remain in your historical audit records but are marked as ARCHIVED.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Archive Contract', action: 'confirm-archive-sw-agreement-table', variant: 'primary' })}
+      `,
+    });
+    node.querySelector('[data-action="confirm-archive-sw-agreement-table"]')?.addEventListener('click', async () => {
+      try {
+        await api.post(`/api/marketing/software-agreements/${id}/archive`, {});
+        closeModal();
+        toast('Software contract archived.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
 }
 
 /* ---------------------------------------------------- Contract Preview Screen */
@@ -1057,10 +1215,19 @@ async function renderContractPreview(container, agreementId, ctx) {
     return;
   }
 
+  let brandAssets = { product_logo: { exists: false }, company_logo: { exists: false } };
+  try {
+    brandAssets = await api.get('/api/marketing/brand-assets');
+  } catch { /* ignore */ }
+
   const s = res.snapshot;
   const c = s.commercial_terms;
   const calc = s.illustrative_calculation;
   const deliverables = s.deliverables || [];
+
+  const mode = s.branding_mode || 'BOTH';
+  const showCompany = (mode === 'BOTH' || mode === 'COMPANY_ONLY') && brandAssets.company_logo?.exists;
+  const showProduct = (mode === 'BOTH' || mode === 'PRODUCT_ONLY') && brandAssets.product_logo?.exists;
 
   container.innerHTML = `
     ${pageHeader({
@@ -1072,6 +1239,12 @@ async function renderContractPreview(container, agreementId, ctx) {
         ${button({ label: 'Download PDF', action: 'download-pdf-btn', variant: 'secondary', icon: 'download' })}
         ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
           ? button({ label: 'Edit Draft', action: 'edit-preview-draft', variant: 'secondary' })
+          : ''}
+        ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
+          ? button({ label: 'Delete Draft', action: 'delete-preview-draft', variant: 'danger' })
+          : ''}
+        ${['ACCEPTED', 'SIGNED', 'ACTIVE', 'TERMINATED'].includes(s.status)
+          ? button({ label: 'Archive', action: 'archive-preview-contract', variant: 'secondary' })
           : ''}
         ${button({ label: 'Status Actions', action: 'open-status-modal', variant: 'secondary' })}
       `,
@@ -1094,14 +1267,24 @@ async function renderContractPreview(container, agreementId, ctx) {
       
       <!-- Document Header with Company & Product Brand Blocks -->
       <div class="flex flex-col sm:flex-row justify-between items-start gap-6 border-b border-outline pb-6 mb-8">
-        <div>
-          <h2 class="font-headline text-lg font-bold uppercase tracking-tight text-primary">${esc(s.business.business_name)}</h2>
-          <p class="text-xs text-on-surface-variant">${esc(s.business.legal_name)}</p>
-          <p class="text-xs text-on-surface-variant mt-1">${esc(s.business.address)}</p>
-          <p class="text-xs text-on-surface-variant">${[s.business.email, s.business.phone, s.business.website].filter(Boolean).join(' · ')}</p>
-          <p class="font-mono text-xs text-on-surface-variant mt-0.5">GSTIN: ${esc(s.business.gstin || '—')} · PAN: ${esc(s.business.pan || '—')}</p>
+        <div class="flex items-start gap-4">
+          ${showCompany ? `
+            <img src="${brandAssets.company_logo.dataUri}" alt="Company Logo" class="max-h-14 max-w-[150px] object-contain shrink-0" />
+          ` : ''}
+          <div>
+            <h2 class="font-headline text-lg font-bold uppercase tracking-tight text-primary">${esc(s.business.business_name)}</h2>
+            <p class="text-xs text-on-surface-variant">${esc(s.business.legal_name || s.business.business_name)}</p>
+            <p class="text-xs text-on-surface-variant mt-1">${esc(s.business.address)}</p>
+            <p class="text-xs text-on-surface-variant">${[s.business.email, s.business.phone, s.business.website].filter(Boolean).join(' · ')}</p>
+            <p class="font-mono text-xs text-on-surface-variant mt-0.5">GSTIN: ${esc(s.business.gstin || '—')} · PAN: ${esc(s.business.pan || '—')}</p>
+          </div>
         </div>
-        <div class="sm:text-right">
+        <div class="sm:text-right flex flex-col items-end">
+          ${showProduct ? `
+            <div class="mb-2">
+              <img src="${brandAssets.product_logo.dataUri}" alt="Product Logo" class="max-h-12 max-w-[140px] object-contain" />
+            </div>
+          ` : ''}
           <div class="inline-block border border-outline bg-surface-dim px-3 py-1 text-xs font-mono font-bold">
             CONTRACT #${esc(s.contract_number)}
           </div>
@@ -1369,6 +1552,56 @@ async function renderContractPreview(container, agreementId, ctx) {
       const res = await api.get(`/api/marketing/agreements/${agreementId}`);
       agreementForm(ctx, res.agreement);
     } catch (err) { toast(err.message, 'danger'); }
+  });
+
+  ctx.on('delete-preview-draft', () => {
+    const node = modal({
+      title: 'Delete Draft Agreement',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Are you sure you want to delete draft agreement <strong class="font-mono">${esc(s.contract_number)}</strong> for <strong class="font-semibold">${esc(s.influencer?.legal_name || 'Influencer')}</strong>?</p>
+          <p class="text-xs text-red-600 bg-red-50 p-3 rounded border border-red-200">This action will permanently delete this draft agreement. It cannot be undone.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Delete Draft', action: 'confirm-delete-agreement-draft', variant: 'danger' })}
+      `,
+    });
+
+    ctx.on('confirm-delete-agreement-draft', async () => {
+      try {
+        await api.delete(`/api/marketing/agreements/${agreementId}`);
+        closeModal();
+        toast('Draft agreement deleted.');
+        ctx.navigate('#/marketing/contracts');
+      } catch (err) { toast(err.message, 'danger'); }
+    });
+  });
+
+  ctx.on('archive-preview-contract', () => {
+    const node = modal({
+      title: 'Archive Contract',
+      body: `
+        <div class="space-y-3">
+          <p class="text-sm">Archive contract <strong class="font-mono">${esc(s.contract_number)}</strong>?</p>
+          <p class="text-xs text-on-surface-variant bg-surface-dim p-3 rounded border border-outline">Archiving removes the contract from active workflows while preserving all historical attribution, sales links, and audit logs.</p>
+        </div>
+      `,
+      footer: `
+        ${button({ label: 'Cancel', action: 'close-modal' })}
+        ${button({ label: 'Archive Contract', action: 'confirm-archive-agreement', variant: 'primary' })}
+      `,
+    });
+
+    ctx.on('confirm-archive-agreement', async () => {
+      try {
+        await api.post(`/api/marketing/agreements/${agreementId}/archive`, {});
+        closeModal();
+        toast('Contract archived.');
+        ctx.rerender();
+      } catch (err) { toast(err.message, 'danger'); }
+    });
   });
 
   ctx.on('open-status-modal', () => {

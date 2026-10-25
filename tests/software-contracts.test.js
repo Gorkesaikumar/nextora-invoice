@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
 import { makeClient, configureIssuer, OWNER } from './helpers.js';
 import { extractPdf } from './pdf-text.js';
 
@@ -521,4 +522,518 @@ test('9. Unified Contracts Endpoint: Returns both software and influencer agreem
   assert.ok(foundSw);
   assert.equal(foundSw.contract_type, 'SOFTWARE_SERVICES');
   assert.equal(foundSw.counterparty_name, 'Delta Logistics LLP');
+});
+
+test('10. Software contract branding mode, draft deletion, and archival', async () => {
+  const client = await withAdmin(10);
+
+  // 1. Create with default or explicit branding_mode
+  const draft = client.ok(await client.json('POST', '/api/marketing/software-agreements', sampleSoftwareContract({
+    client_name: 'Branding Test Client',
+    branding_mode: 'COMPANY_ONLY',
+  }))).agreement;
+  assert.equal(draft.branding_mode, 'COMPANY_ONLY');
+
+  // Preview contains branding_mode
+  const prev = client.ok(await client.json('GET', `/api/marketing/software-agreements/${draft.id}/preview`));
+  assert.equal(prev.snapshot.branding_mode, 'COMPANY_ONLY');
+
+  // 2. Update branding_mode to BOTH
+  const updated = client.ok(await client.json('PATCH', `/api/marketing/software-agreements/${draft.id}`, {
+    branding_mode: 'BOTH',
+  })).agreement;
+  assert.equal(updated.branding_mode, 'BOTH');
+
+  // 3. Delete draft software agreement
+  const delRes = client.ok(await client.json('DELETE', `/api/marketing/software-agreements/${draft.id}`));
+  assert.equal(delRes.deleted, true);
+
+  // Verify 404
+  const getDeleted = await client.json('GET', `/api/marketing/software-agreements/${draft.id}`);
+  assert.equal(getDeleted.status, 404);
+
+  // 4. Create another and advance to SIGNED
+  const activeSw = client.ok(await client.json('POST', '/api/marketing/software-agreements', sampleSoftwareContract({
+    client_name: 'Archived SW Client',
+    branding_mode: 'PRODUCT_ONLY',
+  }))).agreement;
+
+  await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/status`, { action: 'SUBMIT_APPROVAL' });
+  await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/status`, { action: 'APPROVE' });
+  await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/status`, { action: 'SEND' });
+  await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/status`, { action: 'ACCEPT' });
+  await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/status`, { action: 'SIGN' });
+
+  // Delete fails for non-draft
+  const blockedDel = await client.json('DELETE', `/api/marketing/software-agreements/${activeSw.id}`);
+  assert.equal(blockedDel.status, 409);
+  assert.equal(blockedDel.data.code, 'NOT_DELETABLE');
+
+  // Archival succeeds
+  const archived = client.ok(await client.json('POST', `/api/marketing/software-agreements/${activeSw.id}/archive`));
+  assert.equal(archived.agreement.status, 'ARCHIVED');
+});
+
+function makeTestPng(width = 80, height = 80) {
+  const rowLen = 1 + width * 3;
+  const raw = Buffer.alloc(rowLen * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * rowLen] = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = y * rowLen + 1 + x * 3;
+      raw[idx] = 0; raw[idx + 1] = 174; raw[idx + 2] = 239;
+    }
+  }
+  const idatData = zlib.deflateSync(raw);
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    const t = Buffer.from(type);
+    let crc = 0xFFFFFFFF;
+    for (const b of Buffer.concat([t, data])) {
+      crc ^= b;
+      for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+    }
+    const c = Buffer.alloc(4); c.writeUInt32BE((crc ^ 0xFFFFFFFF) >>> 0, 0);
+    return Buffer.concat([len, t, data, c]);
+  };
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idatData), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('12. Canonical HTML Preview, Centered Company Logo Parity, Reference Contract (NC/SDA/2026-27/0001) Layout and Standalone HTML', async () => {
+  const client = await withAdmin(12);
+
+  // 1. Test Fallback when company logo is absent
+  const draftNoLogo = client.ok(await client.json('POST', '/api/marketing/software-agreements', sampleSoftwareContract({
+    client_name: 'Fallback Client',
+    title: 'Text-Only Logo Agreement',
+  }))).agreement;
+
+  const prevNoLogo = client.ok(await client.json('GET', `/api/marketing/software-agreements/${draftNoLogo.id}/preview`));
+  assert.ok(prevNoLogo.html, 'Preview endpoint must return canonical HTML');
+  assert.ok(prevNoLogo.html.includes('nc-contract-doc'));
+  assert.ok(prevNoLogo.html.includes('nc-logo-fallback-text'));
+  assert.ok(prevNoLogo.html.includes('NEXTORA CREATIONS'));
+
+  // 2. Upload Company Logo via /api/settings/logo
+  const pngBytes = makeTestPng(120, 120);
+  const pngDataUri = `data:image/png;base64,${pngBytes.toString('base64')}`;
+  client.ok(await client.json('POST', '/api/settings/logo', { png: pngDataUri }));
+
+  // 3. Create reference contract matching NC/SDA/2026-27/0001 (Sevajobs / Raghava)
+  const refContract = client.ok(await client.json('POST', '/api/marketing/software-agreements', {
+    client_name: 'Sevajobs',
+    contact_person: 'Raghava',
+    client_email: 'raghava@sevajobs.example.com',
+    client_phone: '+91 98765 43210',
+    billing_address: 'Hitech City, Madhapur',
+    city: 'Hyderabad',
+    state_code: '36',
+    postal_code: '500081',
+    country: 'India',
+    client_business_type: 'Individual',
+    signatory_name: 'Raghava',
+    signatory_designation: 'Founder / Managing Director',
+
+    title: 'Seva jobs project',
+    service_category: 'Custom software development',
+    service_description: 'Full-stack software development services for Sevajobs employment portal and mobile application.',
+    business_objectives: 'Build scalable job portal linking local job seekers with verified employers.',
+    start_date: '2026-04-01',
+    estimated_completion_date: '2026-05-01',
+    development_duration: '1 Month',
+    deployment_target: 'Production Cloud Server (Linux / Node.js / PostgreSQL)',
+    hosting_responsibility: 'Client provides server environment and API credentials.',
+    client_assets_access: 'Logo assets, branding guidelines, SMS gateway keys.',
+    third_party_integrations: 'Payment Gateway, WhatsApp Notifications API',
+    acceptance_criteria: '7 business days UAT review window upon staging deployment.',
+
+    pricing_mode: 'INCLUSIVE',
+    base_price_minor: 2000000, // ₹20,000.00
+    advance_percentage_bp: 1000, // 10% -> ₹2,000.00
+    free_support_months: 3,
+    post_support_feature_rate_minor: 500000, // ₹5,000.00 per feature
+    maintenance_included: true,
+    maintenance_rate_minor: 200000, // ₹2,000.00 / month
+
+    features: [
+      {
+        sno: 1,
+        name: 'Job Seeker Registration & Verified Profile Builder with Document Uploads',
+        description: 'Complete user registration flow with phone OTP verification and resume/certificate uploads.',
+        deliverables: 'Registration UI, secure backend endpoints, cloud storage integration',
+        priority: 'High',
+        included: true,
+      },
+      {
+        sno: 2,
+        name: 'Employer Job Posting, Filtering & Candidate Application Management System',
+        description: 'Dashboard for employers to create job listings, review applicants, and schedule interviews.',
+        deliverables: 'Employer dashboard, applicant management workflow, email notifications',
+        priority: 'High',
+        included: true,
+      },
+      {
+        sno: 3,
+        name: 'Admin Governance, Role-Based Access Control & Real-Time Activity Monitoring',
+        description: 'Super-admin panel for content moderation, employer verification, and dispute resolution.',
+        deliverables: 'Admin console, RBAC middleware, audit log viewer',
+        priority: 'Critical',
+        included: true,
+      },
+    ],
+
+    payment_milestones: [
+      {
+        name: 'Milestone 1 — Core Backend, Database Schema & Authentication Architecture',
+        trigger: 'Completion of database schemas, user authentication APIs, and cloud environment deployment with test accounts.',
+        amount_minor: 900000, // ₹9,000.00
+        due_date: '2026-04-15',
+      },
+      {
+        name: 'Milestone 2 — Web Frontend, Employer Portal, UAT Sign-Off & Final Production Handover',
+        trigger: 'Full delivery of responsive client portal, verification of all features, and handover of administrative credentials.',
+        amount_minor: 900000, // ₹9,000.00
+        due_date: '2026-05-01',
+      },
+    ],
+  })).agreement;
+
+  // 4. Verify Preview Endpoint response and Canonical HTML
+  const prev = client.ok(await client.json('GET', `/api/marketing/software-agreements/${refContract.id}/preview`));
+  assert.ok(prev.snapshot);
+  assert.ok(prev.html);
+  assert.ok(prev.logoDataUri);
+  assert.ok(prev.logoDataUri.startsWith('data:image/png;base64,'));
+
+  // Centered logo in HTML
+  assert.ok(prev.html.includes('class="nc-logo-wrap"'));
+  assert.ok(prev.html.includes('class="nc-logo-img"'));
+  assert.ok(prev.html.includes(prev.logoDataUri));
+
+  // Canonical 10 Sections in HTML
+  assert.ok(prev.html.includes('SECTION 1: PARTIES TO THE AGREEMENT'));
+  assert.ok(prev.html.includes('SECTION 2: PROJECT &amp; SERVICE DETAILS'));
+  assert.ok(prev.html.includes('SECTION 3: REQUIREMENTS &amp; FEATURE SCOPE (SCHEDULE A)'));
+  assert.ok(prev.html.includes('SECTION 4: PROJECT PRICING &amp; GST CALCULATIONS'));
+  assert.ok(prev.html.includes('SECTION 5: PAYMENT TERMS &amp; MILESTONES'));
+  assert.ok(prev.html.includes('SECTION 6: DEVELOPMENT TIMELINE'));
+  assert.ok(prev.html.includes('SECTION 7: THREE MONTHS FREE SUPPORT &amp; POST-SUPPORT TERMS'));
+  assert.ok(prev.html.includes('SECTION 8: MONTHLY MAINTENANCE PLAN'));
+  assert.ok(prev.html.includes('SECTION 9: TERMS AND CONDITIONS'));
+  assert.ok(prev.html.includes('SECTION 10: ACCEPTANCE &amp; EXECUTION'));
+
+  // Commercial / Financial terms verification for GST-inclusive ₹20,000
+  assert.equal(prev.snapshot.financials.pricing_mode, 'INCLUSIVE');
+  assert.equal(prev.snapshot.financials.final_amount_minor, 2000000); // ₹20,000.00
+  assert.equal(prev.snapshot.financials.advance_amount_minor, 200000); // ₹2,000.00 (10%)
+  assert.equal(prev.snapshot.financials.remaining_balance_minor, 1800000); // ₹18,000.00
+  assert.equal(prev.snapshot.financials.taxable_amount_minor, 1694915); // ₹16,949.15
+  assert.equal(prev.snapshot.financials.cgst_minor, 152542); // ₹1,525.42
+  assert.equal(prev.snapshot.financials.sgst_minor, 152543); // ₹1,525.43
+  assert.equal(prev.snapshot.financials.total_gst_minor, 305085); // ₹3,050.85
+  assert.equal(prev.snapshot.financials.is_milestones_reconciled, true);
+
+  // Formatted amounts in HTML
+  assert.ok(prev.html.includes('₹20,000.00'));
+  assert.ok(prev.html.includes('₹2,000.00'));
+  assert.ok(prev.html.includes('₹18,000.00'));
+  assert.ok(prev.html.includes('₹16,949.15'));
+  assert.ok(prev.html.includes('₹1,525.42'));
+  assert.ok(prev.html.includes('₹1,525.43'));
+  assert.ok(prev.html.includes('₹3,050.85'));
+  assert.ok(prev.html.includes('₹5,000.00'));
+  assert.ok(prev.html.includes('₹2,000.00 per month'));
+
+  // 5. Standalone HTML Endpoint (GET /api/marketing/software-agreements/:id/html)
+  const htmlRes = await client.raw('GET', `/api/marketing/software-agreements/${refContract.id}/html`);
+  assert.equal(htmlRes.status, 200);
+  assert.ok(htmlRes.headers.get('content-type').includes('text/html'));
+  assert.ok(htmlRes.headers.get('content-disposition').includes('Software_Development_Agreement.html'));
+  const htmlText = await htmlRes.text();
+  assert.ok(htmlText.includes('<!DOCTYPE html>'));
+  assert.ok(htmlText.includes('nc-contract-doc'));
+  assert.ok(htmlText.includes('@page {'));
+
+  // 6. PDF Generation & Parity Verification
+  const genRes = client.ok(await client.json('POST', `/api/marketing/software-agreements/${refContract.id}/generate-pdf`));
+  assert.equal(genRes.success, true);
+
+  const pdfRes = await client.binary('GET', `/api/marketing/software-agreements/${refContract.id}/pdf`);
+  assert.equal(pdfRes.status, 200);
+  assert.equal(pdfRes.headers.get('content-type'), 'application/pdf');
+
+  const pdfPages = extractPdf(pdfRes.bytes);
+  assert.ok(pdfPages.length >= 3 && pdfPages.length <= 5, `Expected 3-5 pages, got ${pdfPages.length}`);
+
+  const pdfFullText = pdfPages.map(p => p.text.join('\n')).join('\n');
+
+  // All 10 sections present in PDF text
+  assert.ok(pdfFullText.includes('SECTION 1: PARTIES TO THE AGREEMENT'));
+  assert.ok(pdfFullText.includes('SECTION 2: PROJECT & SERVICE DETAILS'));
+  assert.ok(pdfFullText.includes('SECTION 3: REQUIREMENTS & FEATURE SCOPE (SCHEDULE A)'));
+  assert.ok(pdfFullText.includes('SECTION 4: PROJECT PRICING & GST CALCULATIONS'));
+  assert.ok(pdfFullText.includes('SECTION 5: PAYMENT TERMS & MILESTONES'));
+  assert.ok(pdfFullText.includes('SECTION 6: DEVELOPMENT TIMELINE'));
+  assert.ok(pdfFullText.includes('SECTION 7: THREE MONTHS FREE SUPPORT & POST-SUPPORT TERMS'));
+  assert.ok(pdfFullText.includes('SECTION 8: MONTHLY MAINTENANCE PLAN'));
+  assert.ok(pdfFullText.includes('SECTION 9: TERMS AND CONDITIONS'));
+  assert.ok(pdfFullText.includes('SECTION 10: ACCEPTANCE & EXECUTION'));
+
+  // Identical business numbers in PDF
+  assert.ok(pdfFullText.includes('20,000.00'));
+  assert.ok(pdfFullText.includes('2,000.00'));
+  assert.ok(pdfFullText.includes('18,000.00'));
+  assert.ok(pdfFullText.includes('16,949.15'));
+  assert.ok(pdfFullText.includes('1,525.42'));
+  assert.ok(pdfFullText.includes('1,525.43'));
+  assert.ok(pdfFullText.includes('3,050.85'));
+  assert.ok(pdfFullText.includes('5,000.00'));
+
+  // Signatures on final page and page count
+  const lastPageText = pdfPages[pdfPages.length - 1].text.join('\n');
+  assert.ok(lastPageText.includes('FOR NEXTORA CREATIONS:'));
+  assert.ok(lastPageText.includes('FOR CLIENT / CUSTOMER:'));
+  assert.ok(lastPageText.includes('SECTION 10: ACCEPTANCE & EXECUTION'));
+  assert.ok(lastPageText.includes(`Page ${pdfPages.length} of ${pdfPages.length}`));
+
+  // Legal footnote present on final page without clipping
+  assert.ok(lastPageText.includes('Both parties must execute this Agreement via verified signature'));
+});
+
+test('11. Section-Aware Pagination: Reference contract layout, repeat table headers, orphan prevention, and multi-page continuity', async () => {
+  const client = await withAdmin(11);
+
+  // Reference contract fixture (Sevajobs / NC/SDA/2026-27/0001)
+  const refAgr = client.ok(await client.json('POST', '/api/marketing/software-agreements', {
+    client_name: 'Raghava',
+    client_legal_name: 'Sevajobs',
+    contact_person: 'Raghava',
+    client_email: 'raghava@gmail.com',
+    client_phone: '7674981970',
+    billing_address: 'Nizamabad, ambedkar colony',
+    city: 'Nizamabad',
+    state_code: '36', // Telangana
+    postal_code: '503001',
+    country: 'India',
+    client_gstin: '',
+    client_pan: '',
+    client_business_type: 'private limited',
+    signatory_name: 'Raghava',
+    signatory_designation: 'Authorized Representative',
+    title: 'Seva jobs project',
+    service_category: 'Web application development',
+    service_description: 'project developmenet',
+    business_objectives: 'project developmenet',
+    start_date: '2026-10-25',
+    estimated_completion_date: '2026-11-25',
+    development_duration: '1 Month',
+    deployment_target: 'Cloud VPS / Docker / Client Infrastructure',
+    hosting_responsibility: 'Client provides and funds hosting; Developer configures deployment',
+    client_assets_access: 'Branding logos, domain DNS access, third-party API keys, and content',
+    acceptance_criteria: '7 business days User Acceptance Testing window upon staging deployment',
+    pricing_mode: 'INCLUSIVE',
+    base_price_minor: 2000000, // ₹20,000.00
+    gst_rate_bp: 1800,
+    gst_treatment: 'TAXABLE',
+    discount_minor: 0,
+    additional_charges_minor: 0,
+    advance_percentage_bp: 1000, // 10.00%
+    features: [
+      {
+        sno: 1,
+        name: 'System Architecture & Database Design',
+        description: 'Design of database schemas, technical architecture, and system specifications.',
+        deliverables: 'Entity Relationship Diagram, Architecture Documentation',
+        priority: 'High',
+        included: true,
+        notes: '',
+      },
+      {
+        sno: 2,
+        name: 'Core Application Development',
+        description: 'Implementation of primary business logic, functional workflows, and data processing.',
+        deliverables: 'Functional software modules in staging environment',
+        priority: 'High',
+        included: true,
+        notes: '',
+      },
+      {
+        sno: 3,
+        name: 'Responsive User Interface & Portal',
+        description: 'Front-end interface optimized for desktop, tablet, and mobile browsers.',
+        deliverables: 'Web / desktop interface screens and components',
+        priority: 'Normal',
+        included: true,
+        notes: '',
+      },
+      {
+        sno: 4,
+        name: 'API & Third-Party Service Integration',
+        description: 'Integration of payment gateway, external notifications, and third-party APIs.',
+        deliverables: 'Configured webhook handlers and integrated API clients',
+        priority: 'Normal',
+        included: true,
+        notes: '',
+      },
+      {
+        sno: 5,
+        name: 'Deployment, Testing & Handover',
+        description: 'End-to-end testing, user acceptance review, and production deployment configuration.',
+        deliverables: 'Deployed application, admin credentials, source code repository',
+        priority: 'Critical',
+        included: true,
+        notes: '',
+      },
+    ],
+    included_services: 'Software engineering, architecture, code reviews, staging deployment, 3 months complimentary support.',
+    excluded_services: 'Paid third-party API usage, cloud hosting fees, domain renewals, graphic design creation.',
+    client_responsibilities: 'Timely feedback within 5 business days, providing credentials and content assets.',
+    third_party_dependencies: 'External payment processor verification, domain registrar access, SMS gateway.',
+    payment_milestones: [
+      {
+        name: 'Milestone 1: Project Kickoff & Architecture Sign-Off',
+        trigger: 'Approval of system specifications and database design',
+        due_date: '',
+        amount_minor: 0,
+      },
+      {
+        name: 'Milestone 2: Core Development & Staging Release',
+        trigger: 'Deployment of core functional modules to staging environment',
+        due_date: '',
+        amount_minor: 0,
+      },
+      {
+        name: 'Milestone 3: Final Acceptance & Production Handover',
+        trigger: 'Successful UAT sign-off, production deployment, and credential handover',
+        due_date: '',
+        amount_minor: 0,
+      },
+    ],
+    free_support_months: 3,
+    support_start_date: '2026-11-25',
+    support_end_date: '2027-02-25',
+    maintenance_included: false,
+    maintenance_rate_minor: 200000,
+    nextora_signatory_name: 'Authorized Signatory',
+    nextora_signatory_title: 'Managing Partner',
+    client_signatory_name: 'Raghava',
+    client_signatory_title: 'Authorized Representative',
+  })).agreement;
+
+  // A. Generate and Download PDF
+  const genRes = client.ok(await client.json('POST', `/api/marketing/software-agreements/${refAgr.id}/generate-pdf`));
+  assert.equal(genRes.success, true);
+
+  const pdfRes = await client.binary('GET', `/api/marketing/software-agreements/${refAgr.id}/pdf`);
+  assert.equal(pdfRes.status, 200);
+  assert.equal(pdfRes.bytes.subarray(0, 5).toString(), '%PDF-');
+
+  // B. Page-by-page text and section inspection
+  const pages = extractPdf(pdfRes.bytes);
+  assert.equal(pages.length, 4, 'Reference contract must span exactly 4 pages');
+
+  const p1Norm = pages[0].text.join('\n').replace(/\s+/g, ' ');
+  const p2Norm = pages[1].text.join('\n').replace(/\s+/g, ' ');
+  const p3Norm = pages[2].text.join('\n').replace(/\s+/g, ' ');
+  const p4Norm = pages[3].text.join('\n').replace(/\s+/g, ' ');
+
+  // Scenario 1: Section 3 starts on page 2 in the reference contract
+  assert.ok(p2Norm.includes('SECTION 3: REQUIREMENTS & FEATURE SCOPE (SCHEDULE A)'), 'Section 3 heading must be on page 2');
+  assert.ok(!p1Norm.includes('SECTION 3: REQUIREMENTS & FEATURE SCOPE (SCHEDULE A)'), 'Section 3 heading must NOT be on page 1');
+
+  // Scenario 2: Section 3 does not leave its first feature row isolated on page 1
+  assert.ok(!p1Norm.includes('System Architecture & Database Design'), 'First feature row must NOT be on page 1');
+  assert.ok(p2Norm.includes('System Architecture & Database Design'), 'First feature row must appear on page 2 with Section 3');
+  assert.ok(p2Norm.includes('Core Application Development'), 'Row 2 on page 2');
+  assert.ok(p2Norm.includes('Responsive User Interface & Portal'), 'Row 3 on page 2');
+  assert.ok(p2Norm.includes('API & Third-Party Service Integration'), 'Row 4 on page 2');
+  assert.ok(p2Norm.includes('Deployment, Testing & Handover'), 'Row 5 on page 2');
+  assert.ok(p2Norm.includes('Included Services: Software engineering'), 'Scope notes on page 2');
+
+  // Page 1 contains Section 1 and Section 2 cleanly
+  assert.ok(p1Norm.includes('SECTION 1: PARTIES TO THE AGREEMENT'));
+  assert.ok(p1Norm.includes('SECTION 2: PROJECT & SERVICE DETAILS'));
+  assert.ok(p1Norm.includes('Acceptance Criteria: 7 business days'));
+
+  // Page 2 contains Section 4, 5, 6
+  assert.ok(p2Norm.includes('SECTION 4: PROJECT PRICING & GST CALCULATIONS'));
+  assert.ok(p2Norm.includes('Taxable Amount: ₹16,949.15'));
+  assert.ok(p2Norm.includes('Final Project Amount: ₹20,000.00'));
+  assert.ok(p2Norm.includes('SECTION 5: PAYMENT TERMS & MILESTONES'));
+  assert.ok(p2Norm.includes('Milestone 1: Project Kickoff'));
+  assert.ok(p2Norm.includes('SECTION 6: DEVELOPMENT TIMELINE'));
+  assert.ok(!p2Norm.includes('SECTION 8: MONTHLY MAINTENANCE PLAN'), 'Section 8 must NOT start on page 2');
+
+  // Scenario 3 & 4: Section 8 heading and introductory paragraph remain together on page 3
+  assert.ok(p3Norm.includes('SECTION 7: THREE MONTHS FREE SUPPORT & POST-SUPPORT TERMS'));
+  assert.ok(p3Norm.includes('SECTION 8: MONTHLY MAINTENANCE PLAN'), 'Section 8 heading must be on page 3');
+  assert.ok(p3Norm.includes('Ongoing monthly maintenance is available at the standard rate of ₹2,000.00 per month'), 'Section 8 text must be on page 3 with its heading');
+  assert.ok(p3Norm.includes('SECTION 9: TERMS AND CONDITIONS'), 'Section 9 heading starts on page 3');
+
+  // Scenario 7: Section 9 remains readable across multiple pages (pages 3 and 4)
+  assert.ok(p3Norm.includes('Intellectual Property Ownership'));
+  assert.ok(p3Norm.includes('Confidentiality & Data Protection'));
+  assert.ok(p4Norm.includes('Suspension & Termination'));
+  assert.ok(p4Norm.includes('Limitation of Liability'));
+  assert.ok(p4Norm.includes('Dispute Resolution & Governing Law'));
+
+  // Scenario 8: Signature blocks not split awkwardly, on page 4 with Section 10
+  assert.ok(p4Norm.includes('SECTION 10: ACCEPTANCE & EXECUTION'));
+  assert.ok(p4Norm.includes('FOR NEXTORA CREATIONS:'));
+  assert.ok(p4Norm.includes('FOR CLIENT / CUSTOMER:'));
+  assert.ok(p4Norm.includes('Authorized Signatory'));
+  assert.ok(p4Norm.includes('Raghava'));
+  assert.ok(p4Norm.includes('Note: Generating or downloading this PDF document does not constitute formal execution'));
+
+  // Scenario 9 & 10: Footers and Page Numbers across all 4 pages
+  assert.ok(p1Norm.includes('Page 1 of 4'));
+  assert.ok(p2Norm.includes('Page 2 of 4'));
+  assert.ok(p3Norm.includes('Page 3 of 4'));
+  assert.ok(p4Norm.includes('Page 4 of 4'));
+
+  // Scenario 12: GST calculations intact
+  const preview = client.ok(await client.json('GET', `/api/marketing/software-agreements/${refAgr.id}/preview`));
+  assert.equal(preview.snapshot.financials.pricing_mode, 'INCLUSIVE');
+  assert.equal(preview.snapshot.financials.final_amount_minor, 2000000);
+  assert.equal(preview.snapshot.financials.advance_amount_minor, 200000);
+  assert.equal(preview.snapshot.financials.remaining_balance_minor, 1800000);
+  assert.equal(preview.snapshot.financials.taxable_amount_minor, 1694915);
+  assert.equal(preview.snapshot.financials.total_gst_minor, 305085);
+
+  // Scenario 5 & 6: Long table with 14 features spans multiple pages and repeats table headers
+  const manyFeatures = Array.from({ length: 14 }, (_, i) => ({
+    sno: i + 1,
+    name: `Enterprise Scalability Module ${i + 1}`,
+    description: `Detailed technical description and architecture for scalability module ${i + 1} with high throughput.`,
+    deliverables: `Module code, test suites, API docs ${i + 1}`,
+    priority: i === 0 ? 'Critical' : 'Normal',
+    included: true,
+    notes: `Acceptance criteria specification ${i + 1}`,
+  }));
+
+  const longSwAgr = client.ok(await client.json('POST', '/api/marketing/software-agreements', sampleSoftwareContract({
+    title: 'High-Volume Enterprise Scale Software Agreement',
+    features: manyFeatures,
+  }))).agreement;
+
+  const longPdfRes = await client.binary('GET', `/api/marketing/software-agreements/${longSwAgr.id}/pdf`);
+  const longPages = extractPdf(longPdfRes.bytes);
+  assert.ok(longPages.length >= 4, 'Long contract spans multiple pages');
+
+  // Verify table header repetition on continuation pages where feature table continues
+  const continuationPageWithFeatures = longPages.find((p, idx) => {
+    if (idx === 0) return false;
+    const txt = p.text.join('\n');
+    return txt.includes('Enterprise Scalability Module') && !txt.includes('SECTION 3: REQUIREMENTS');
+  });
+  if (continuationPageWithFeatures) {
+    const contText = continuationPageWithFeatures.text.join('\n');
+    assert.ok(contText.includes('Feature Name'), 'Table header column "Feature Name" must repeat on continuation page');
+    assert.ok(contText.includes('Deliverables'), 'Table header column "Deliverables" must repeat on continuation page');
+    assert.ok(contText.includes('Priority'), 'Table header column "Priority" must repeat on continuation page');
+  }
 });

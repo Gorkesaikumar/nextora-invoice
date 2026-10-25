@@ -6,6 +6,7 @@ import { roundDiv, percentOf, BP_PER_UNIT, splitTax, toMinor } from './money.js'
 import { formatMinor, formatDate } from './words.js';
 import { supplyTypeFor, supplyTypeLabel, gstinChecksumValid, gstinStateCode } from './gst.js';
 import { brandLogoBytes } from './marketing.js';
+import { requireWriter } from './service.js';
 
 /* ---------------------------------------------------- Standard Clauses */
 
@@ -296,6 +297,7 @@ export async function buildSoftwareContractSnapshot(db, agreementId) {
       : a.service_category,
     service_category_raw: a.service_category,
     service_category_custom: a.service_category_custom,
+    branding_mode: a.branding_mode || 'COMPANY_ONLY',
     created_at: a.created_at,
     updated_at: a.updated_at,
     pdf_generated_at: a.pdf_generated_at,
@@ -515,7 +517,7 @@ export async function createSoftwareAgreement(db, actor, input) {
 
     const { rows } = await tx.query(`
       INSERT INTO inv.software_agreements (
-        id, contract_number, version, status, client_id,
+        id, contract_number, version, status, branding_mode, client_id,
         client_name, client_legal_name, contact_person, client_email, client_phone,
         billing_address, city, state_code, postal_code, country, client_gstin, client_pan, client_business_type,
         signatory_name, signatory_designation,
@@ -537,30 +539,30 @@ export async function createSoftwareAgreement(db, actor, input) {
         client_signatory_name, client_signatory_title,
         created_by, created_at, updated_at
       ) VALUES (
-        $1, $2, 1, 'DRAFT', $3,
-        $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18,
-        $19, $20, $21, $22, $23,
-        $24, $25, $26, $27,
-        $28, $29, $30, $31,
-        $32, $33,
-        $34, $35, $36, $37, $38,
-        $39, $40,
-        $41, $42, $43, $44, $45, $46,
-        $47, $48, $49, $50, $51, $52,
-        $53, $54, $55, $56, $57,
-        $58,
-        $59, $60, $61, $62, $63,
-        $64, $65,
-        $66, $67, $68, $69,
-        $70, $71,
-        $72, $73, $74, $75,
-        $76, $77,
-        $78, now(), now()
+        $1, $2, 1, 'DRAFT', $3, $4,
+        $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14, $15, $16, $17,
+        $18, $19,
+        $20, $21, $22, $23, $24,
+        $25, $26, $27, $28,
+        $29, $30, $31, $32,
+        $33, $34,
+        $35, $36, $37, $38, $39,
+        $40, $41,
+        $42, $43, $44, $45, $46, $47,
+        $48, $49, $50, $51, $52, $53,
+        $54, $55, $56, $57, $58,
+        $59,
+        $60, $61, $62, $63, $64,
+        $65, $66,
+        $67, $68, $69, $70,
+        $71, $72,
+        $73, $74, $75, $76,
+        $77, $78,
+        $79, now(), now()
       ) RETURNING *
     `, [
-      id, allocated.number, input.client_id || null,
+      id, allocated.number, input.branding_mode || 'COMPANY_ONLY', input.client_id || null,
       input.client_name.trim(), input.client_legal_name?.trim() || '', input.contact_person?.trim() || '',
       input.client_email?.trim() || '', input.client_phone?.trim() || '',
       input.billing_address?.trim() || '', input.city?.trim() || '', input.state_code || '36',
@@ -721,8 +723,9 @@ export async function updateSoftwareAgreementDraft(db, actor, id, input) {
         maintenance_exclusions = $69, custom_clauses = $70, special_terms = $71,
         nextora_signatory_name = $72, nextora_signatory_title = $73,
         client_signatory_name = $74, client_signatory_title = $75,
+        branding_mode = $76,
         version = version + 1, updated_at = now()
-      WHERE id = $76
+      WHERE id = $77
       RETURNING *
     `, [
       input.client_id !== undefined ? input.client_id : existing.client_id,
@@ -808,6 +811,7 @@ export async function updateSoftwareAgreementDraft(db, actor, id, input) {
       input.client_signatory_name !== undefined ? input.client_signatory_name.trim() : existing.client_signatory_name,
       input.client_signatory_title !== undefined ? input.client_signatory_title.trim() : existing.client_signatory_title,
 
+      input.branding_mode || existing.branding_mode || 'COMPANY_ONLY',
       id,
     ]);
 
@@ -829,11 +833,12 @@ export async function transitionSoftwareAgreementStatus(db, actor, id, { action,
     APPROVED: ['SEND', 'SIGN', 'CANCEL'],
     SENT: ['ACCEPT', 'SIGN', 'CANCEL'],
     ACCEPTED: ['SIGN', 'CANCEL'],
-    SIGNED: ['ACTIVATE', 'COMPLETE', 'TERMINATE', 'CANCEL'],
-    ACTIVE: ['COMPLETE', 'TERMINATE', 'CANCEL'],
-    COMPLETED: [],
-    TERMINATED: [],
-    CANCELLED: [],
+    SIGNED: ['ACTIVATE', 'COMPLETE', 'TERMINATE', 'CANCEL', 'ARCHIVE'],
+    ACTIVE: ['COMPLETE', 'TERMINATE', 'CANCEL', 'ARCHIVE'],
+    COMPLETED: ['ARCHIVE'],
+    TERMINATED: ['ARCHIVE'],
+    CANCELLED: ['ARCHIVE'],
+    ARCHIVED: [],
   };
 
   const allowed = VALID_TRANSITIONS[agr.status] || [];
@@ -892,6 +897,9 @@ export async function transitionSoftwareAgreementStatus(db, actor, id, { action,
       updates.push(`termination_reason = $${params.length + 1}`);
       params.push(reason || 'Agreement cancelled');
       break;
+    case 'ARCHIVE':
+      newStatus = 'ARCHIVED';
+      break;
   }
 
   updates.unshift(`status = '${newStatus}'`);
@@ -912,6 +920,23 @@ export async function transitionSoftwareAgreementStatus(db, actor, id, { action,
   });
 
   return normalizeAgreement(rows[0]);
+}
+
+export async function deleteDraftSoftwareAgreement(db, actor, id) {
+  requireWriter(actor);
+  const existing = await getSoftwareAgreement(db, id);
+  assert(['DRAFT', 'PENDING_APPROVAL'].includes(existing.status), 409,
+    `Only unexecuted draft agreements can be deleted (current status: ${existing.status}). Please cancel or archive active agreements instead.`,
+    'NOT_DELETABLE');
+
+  await db.query('DELETE FROM inv.software_agreements WHERE id = $1', [id]);
+  await audit(db, 'SOFTWARE_AGREEMENT_DRAFT_DELETED', {
+    actorId: actor.id,
+    entityType: 'SOFTWARE_AGREEMENT',
+    entityId: id,
+    metadata: { contract_number: existing.contract_number, client_name: existing.client_name },
+  });
+  return { deleted: true, contract_number: existing.contract_number };
 }
 
 export async function duplicateSoftwareAgreement(db, actor, id) {

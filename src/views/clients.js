@@ -1,7 +1,7 @@
 import { api, query } from '../lib/api.js';
 import {
   esc, money, date, button, card, emptyState, loading, pageHeader, pagination, field, alertBox,
-  statusBadge, modal, closeModal, toast, statusLabel, badge,
+  statusBadge, modal, closeModal, toast, statusLabel, badge, confirmModal,
 } from '../lib/ui.js';
 import { toMajor, parseAmount } from '../lib/ui.js';
 
@@ -145,7 +145,8 @@ export const render = async (container, params, ctx) => {
               <td class="num text-right">${money(row.collected_minor)}</td>
               <td>${statusBadge(row.status)}</td>
               <td class="text-right whitespace-nowrap">
-                <button type="button" data-action="edit-client" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Edit</button>
+                <button type="button" data-action="edit-client" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Edit</button>
+                <button type="button" data-action="delete-client" data-id="${esc(row.id)}" data-name="${esc(row.name)}" class="text-xs text-red-600 hover:text-red-800">Delete</button>
               </td>
             </tr>`).join('')}
           </tbody>
@@ -164,6 +165,27 @@ export const render = async (container, params, ctx) => {
 
   ctx.on('new-client', () => clientForm(ctx));
   ctx.on('edit-client', trigger => clientForm(ctx, rows.get(trigger.dataset.id)));
+  ctx.on('delete-client', trigger => {
+    const id = trigger.dataset.id;
+    const name = trigger.dataset.name;
+    confirmModal({
+      title: 'Delete client',
+      message: `Are you sure you want to permanently delete "${esc(name)}"? Only clients with no quotations, invoices, software contracts, or POS subscriptions can be deleted. Otherwise, archive the client instead.`,
+      confirmLabel: 'Delete client',
+      action: 'confirm-delete-client-table',
+      tone: 'danger',
+    });
+    ctx.on('confirm-delete-client-table', async () => {
+      try {
+        await api.del(`/api/clients/${id}`);
+        closeModal();
+        toast('Client deleted.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
   ctx.on('page-prev', () => { ctx.setPage(Math.max(1, ctx.page - 1)); ctx.rerender(); });
   ctx.on('page-next', () => { ctx.setPage(ctx.page + 1); ctx.rerender(); });
 
@@ -197,6 +219,7 @@ const renderDetail = async (container, id, ctx) => {
     subtitle: client.company_name && client.company_name !== client.name ? client.company_name : undefined,
     actions: `${button({ label: 'Edit', action: 'edit-client', attributes: `data-id="${esc(client.id)}"` })}
       ${button({ label: client.status === 'ACTIVE' ? 'Archive' : 'Restore', action: 'toggle-client', attributes: `data-id="${esc(client.id)}" data-status="${client.status === 'ACTIVE' ? 'ARCHIVED' : 'ACTIVE'}"` })}
+      ${button({ label: 'Delete', action: 'delete-client-detail', variant: 'danger' })}
       ${button({ label: 'New quotation', action: 'quotation-for-client', attributes: `data-id="${esc(client.id)}"`, variant: 'primary' })}`,
   })}
 
@@ -255,6 +278,25 @@ const renderDetail = async (container, id, ctx) => {
     await api.post(`/api/clients/${client.id}/status`, { status: trigger.dataset.status });
     toast('Client updated.');
     ctx.rerender();
+  });
+  ctx.on('delete-client-detail', () => {
+    confirmModal({
+      title: 'Delete client',
+      message: `Are you sure you want to permanently delete "${esc(client.name)}"? Only clients with no quotations, invoices, software contracts, or POS subscriptions can be deleted. Otherwise, archive the client instead.`,
+      confirmLabel: 'Delete client',
+      action: 'confirm-delete-client-detail',
+      tone: 'danger',
+    });
+    ctx.on('confirm-delete-client-detail', async () => {
+      try {
+        await api.del(`/api/clients/${client.id}`);
+        closeModal();
+        toast('Client deleted.');
+        ctx.navigate('#/clients');
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
   });
   ctx.on('quotation-for-client', () => ctx.navigate(`#/quotations/new?client_id=${client.id}`));
 };

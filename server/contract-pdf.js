@@ -80,8 +80,12 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   const font = await doc.embedFont(regularBytes, { subset: true });
   const bold = await doc.embedFont(boldBytes, { subset: true });
 
-  const companyLogoImg = await embedImage(doc, companyLogo);
-  const productLogoImg = await embedImage(doc, productLogo);
+  const mode = snapshot.branding_mode || 'BOTH';
+  const allowCompany = mode === 'BOTH' || mode === 'COMPANY_ONLY';
+  const allowProduct = mode === 'BOTH' || mode === 'PRODUCT_ONLY';
+
+  const companyLogoImg = allowCompany ? await embedImage(doc, companyLogo) : null;
+  const productLogoImg = allowProduct ? await embedImage(doc, productLogo) : null;
 
   const accent = hexToRgb(snapshot.business?.pdf_accent_color);
   const pages = [];
@@ -138,8 +142,8 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     return top;
   }
 
-  function drawSectionHeading(num, title) {
-    ensureSpace(35);
+  function drawSectionHeading(num, title, minContentHeight = 35) {
+    ensureSpace(38 + minContentHeight);
     y -= 10;
     page.drawRectangle({
       x: MARGIN, y: y - 22, width: CONTENT_WIDTH, height: 22, color: SOFT_BG,

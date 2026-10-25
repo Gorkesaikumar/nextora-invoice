@@ -87,6 +87,7 @@ export const render = async (container, params, ctx) => {
               <td class="whitespace-nowrap text-right">
                 ${row.status === 'DRAFT' ? `<button type="button" data-action="edit" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Edit</button>` : ''}
                 ${row.status === 'DRAFT' ? `<button type="button" data-action="send" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Send</button>` : ''}
+                ${row.status === 'DRAFT' && !row.quotation_number ? `<button type="button" data-action="delete-draft" data-id="${esc(row.id)}" class="ml-3 text-xs text-red-600 hover:text-red-800">Delete</button>` : ''}
                 ${row.status === 'SENT' ? `<button type="button" data-action="transition" data-target="ACCEPTED" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Accept</button>` : ''}
                 ${row.status === 'SENT' ? `<button type="button" data-action="transition" data-target="REJECTED" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Reject</button>` : ''}
                 ${row.status === 'ACCEPTED' && !row.converted_invoice_id ? `<button type="button" data-action="convert" data-id="${esc(row.id)}" class="ml-3 text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Convert</button>` : ''}
@@ -132,6 +133,26 @@ export const render = async (container, params, ctx) => {
     closeModal();
     toast('Quotation sent and numbered.');
     ctx.rerender();
+  });
+  ctx.on('delete-draft', trigger => {
+    pendingId = trigger.dataset.id;
+    confirmModal({
+      title: 'Delete draft quotation',
+      message: 'Are you sure you want to delete this draft quotation? Only unsent drafts can be deleted. Cancel an issued quotation instead.',
+      confirmLabel: 'Delete draft',
+      action: 'confirm-delete-draft',
+      tone: 'danger',
+    });
+  });
+  ctx.on('confirm-delete-draft', async () => {
+    try {
+      await api.del(`/api/quotations/${pendingId}`);
+      closeModal();
+      toast('Draft quotation deleted.');
+      ctx.rerender();
+    } catch (err) {
+      toast(err.message, 'danger');
+    }
   });
   ctx.on('transition', trigger => transitionModal(ctx, rowFor(trigger), trigger.dataset.target));
   ctx.on('convert', trigger => {

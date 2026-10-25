@@ -2,7 +2,7 @@ import { api, query } from '../lib/api.js';
 import { computeLine } from '../lib/money.js';
 import {
   esc, money, percent, button, card, emptyState, loading, pageHeader, pagination, field, alertBox,
-  modal, closeModal, toast, statusBadge, toMajor, parseAmount, titleCase,
+  modal, closeModal, toast, statusBadge, toMajor, parseAmount, titleCase, confirmModal,
 } from '../lib/ui.js';
 
 function productForm(ctx, existing = null) {
@@ -175,8 +175,10 @@ export const render = async (container, params, ctx) => {
               <td class="font-mono text-xs">${esc(row.hsn_sac || '—')}</td>
               <td class="text-xs">${esc(row.billing_interval === 'NONE' ? '—' : titleCase(row.billing_interval))}</td>
               <td>${statusBadge(row.status)}</td>
-              <td class="text-right"><button type="button" data-action="edit-product" data-id="${esc(row.id)}"
-                class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Edit</button></td>
+              <td class="text-right whitespace-nowrap">
+                <button type="button" data-action="edit-product" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Edit</button>
+                <button type="button" data-action="delete-product" data-id="${esc(row.id)}" data-name="${esc(row.name)}" class="text-xs text-red-600 hover:text-red-800">Delete</button>
+              </td>
             </tr>`;
   }).join('')}
           </tbody>
@@ -195,6 +197,27 @@ export const render = async (container, params, ctx) => {
   const rows = new Map(data.products.map(row => [row.id, row]));
   ctx.on('new-product', () => productForm(ctx));
   ctx.on('edit-product', trigger => productForm(ctx, rows.get(trigger.dataset.id)));
+  ctx.on('delete-product', trigger => {
+    const id = trigger.dataset.id;
+    const name = trigger.dataset.name;
+    confirmModal({
+      title: 'Delete product / service',
+      message: `Are you sure you want to permanently delete "${esc(name)}"? Products referenced in quotations, invoices, or POS subscriptions cannot be deleted; deactivate or archive them instead to preserve business records.`,
+      confirmLabel: 'Delete entry',
+      action: 'confirm-delete-product-table',
+      tone: 'danger',
+    });
+    ctx.on('confirm-delete-product-table', async () => {
+      try {
+        await api.del(`/api/products/${id}`);
+        closeModal();
+        toast('Product deleted.');
+        ctx.rerender();
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    });
+  });
   ctx.on('page-prev', () => { ctx.setPage(Math.max(1, ctx.page - 1)); ctx.rerender(); });
   ctx.on('page-next', () => { ctx.setPage(ctx.page + 1); ctx.rerender(); });
 

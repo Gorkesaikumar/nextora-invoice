@@ -134,6 +134,14 @@ async function ensureDatabase() {
     if (!process.env.DATABASE_PATH) {
       process.env.DATABASE_PATH = join(userData, 'nextora-invoicing.sqlite');
     }
+    if (!process.env.EXPORTS_DIR) {
+      process.env.EXPORTS_DIR = join(userData, 'exports');
+    }
+    if (!process.env.BACKUPS_DIR) {
+      process.env.BACKUPS_DIR = join(userData, 'backups');
+    }
+    await mkdir(process.env.EXPORTS_DIR, { recursive: true });
+    await mkdir(process.env.BACKUPS_DIR, { recursive: true });
     db = getDatabase();
     await migrate(db, { directory: join(__dirname, '../server/migrations-sqlite') });
     // The desktop runtime is a local single-user install: the API keeps every

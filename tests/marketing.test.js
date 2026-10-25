@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeClient, configureIssuer, OWNER } from './helpers.js';
+import { makeClient, configureIssuer, OWNER, draft, line } from './helpers.js';
 import { extractPdf } from './pdf-text.js';
 
 const ip = suffix => `10.9.0.${suffix}`;
@@ -525,4 +525,131 @@ test('Comprehensive: 350KB logo upload, brand assets endpoint, Section 3 & 4 cal
   assert.ok(pdfText.includes('₹7,999.00') || pdfText.includes('7999.00'));
   assert.ok(pdfText.includes('Telangana Intra-State'));
   assert.ok(pdfText.includes('Interstate Supplies'));
+});
+
+test('Influencer contract branding modes, draft deletion, and archival', async () => {
+  const client = await withAdmin(11);
+
+  const inf = client.ok(await client.json('POST', '/api/marketing/influencers', sampleInfluencer({
+    instagram_username: '@brand_test_inf',
+  }))).influencer;
+
+  // 1. Create with branding_mode: BOTH
+  const draftAgr = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(inf.id, {
+    branding_mode: 'BOTH',
+  }))).agreement;
+  assert.equal(draftAgr.branding_mode, 'BOTH');
+
+  // Preview has branding_mode
+  const prev1 = client.ok(await client.json('GET', `/api/marketing/agreements/${draftAgr.id}/preview`));
+  assert.equal(prev1.snapshot.branding_mode, 'BOTH');
+
+  // 2. Update to COMPANY_ONLY
+  const updatedAgr = client.ok(await client.json('PATCH', `/api/marketing/agreements/${draftAgr.id}`, {
+    branding_mode: 'COMPANY_ONLY',
+  })).agreement;
+  assert.equal(updatedAgr.branding_mode, 'COMPANY_ONLY');
+
+  // 3. Delete draft agreement
+  const delRes = client.ok(await client.json('DELETE', `/api/marketing/agreements/${draftAgr.id}`));
+  assert.equal(delRes.deleted, true);
+
+  // Verify it's gone
+  const getDeleted = await client.json('GET', `/api/marketing/agreements/${draftAgr.id}`);
+  assert.equal(getDeleted.status, 404);
+
+  // 4. Create another, advance status to SIGNED, test deletion prevention and archival
+  const activeAgr = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(inf.id, {
+    branding_mode: 'TEXT_ONLY',
+  }))).agreement;
+
+  await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/status`, { action: 'SUBMIT_APPROVAL' });
+  await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/status`, { action: 'APPROVE' });
+  await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/status`, { action: 'SEND' });
+  await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/status`, { action: 'ACCEPT' });
+  await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/status`, { action: 'SIGN' });
+
+  // Non-draft cannot be deleted
+  const failedDel = await client.json('DELETE', `/api/marketing/agreements/${activeAgr.id}`);
+  assert.equal(failedDel.status, 409);
+  assert.equal(failedDel.data.code, 'NOT_DELETABLE');
+
+  // Archival works
+  const archiveRes = client.ok(await client.json('POST', `/api/marketing/agreements/${activeAgr.id}/archive`));
+  assert.equal(archiveRes.agreement.status, 'ARCHIVED');
+
+  // Influencer cannot be deleted while contracts exist
+  const failedInfDel = await client.json('DELETE', `/api/marketing/influencers/${inf.id}`);
+  assert.equal(failedInfDel.status, 409);
+  assert.equal(failedInfDel.data.code, 'INFLUENCER_IN_USE');
+
+  // Unused influencer can be deleted
+  const cleanInf = client.ok(await client.json('POST', '/api/marketing/influencers', sampleInfluencer({
+    instagram_username: '@clean_inf',
+  }))).influencer;
+  const cleanDel = client.ok(await client.json('DELETE', `/api/marketing/influencers/${cleanInf.id}`));
+  assert.equal(cleanDel.deleted, true);
+});
+
+test('Client and product deletion protection and referential checks', async () => {
+  const client = await withAdmin(12);
+
+  // 1. Unused client can be deleted
+  const unusedClient = client.ok(await client.json('POST', '/api/clients', {
+    kind: 'BUSINESS',
+    name: 'Temporary Client XYZ',
+    billing_address: 'Some Address',
+    state_code: '36',
+  })).client;
+
+  const delClient = client.ok(await client.json('DELETE', `/api/clients/${unusedClient.id}`));
+  assert.equal(delClient.deleted, true);
+
+  // 2. Client with quotation cannot be deleted
+  const activeClient = client.ok(await client.json('POST', '/api/clients', {
+    kind: 'BUSINESS',
+    name: 'Referenced Client ABC',
+    billing_address: 'Some Address',
+    state_code: '36',
+  })).client;
+
+  client.ok(await client.json('POST', '/api/quotations', draft(activeClient.id, {
+    title: 'Quotation for ABC',
+    issue_date: '2026-11-01',
+  })));
+
+  const blockedClientDel = await client.json('DELETE', `/api/clients/${activeClient.id}`);
+  assert.equal(blockedClientDel.status, 409);
+  assert.equal(blockedClientDel.data.code, 'CLIENT_IN_USE');
+
+  // 3. Unused product can be deleted
+  const unusedProd = client.ok(await client.json('POST', '/api/products', {
+    name: 'Temporary Catalog Item',
+    unit: 'NOS',
+    unit_price_minor: 50000,
+    tax_treatment: 'TAXABLE',
+    tax_rate_bp: 1800,
+  })).product;
+
+  const delProd = client.ok(await client.json('DELETE', `/api/products/${unusedProd.id}`));
+  assert.equal(delProd.deleted, true);
+
+  // 4. Product referenced in quotation cannot be deleted
+  const referencedProd = client.ok(await client.json('POST', '/api/products', {
+    name: 'Permanent Catalog Item',
+    unit: 'NOS',
+    unit_price_minor: 50000,
+    tax_treatment: 'TAXABLE',
+    tax_rate_bp: 1800,
+  })).product;
+
+  client.ok(await client.json('POST', '/api/quotations', draft(activeClient.id, {
+    title: 'Quotation with Product',
+    issue_date: '2026-11-01',
+    items: [line({ product_id: referencedProd.id, description: 'Permanent Item' })],
+  })));
+
+  const blockedProdDel = await client.json('DELETE', `/api/products/${referencedProd.id}`);
+  assert.equal(blockedProdDel.status, 409);
+  assert.equal(blockedProdDel.data.code, 'PRODUCT_IN_USE');
 });
