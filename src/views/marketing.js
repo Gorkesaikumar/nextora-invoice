@@ -3,6 +3,7 @@ import {
   esc, money, date, button, card, emptyState, loading, pageHeader, pagination, field, alertBox,
   statusBadge, modal, closeModal, toast, statusLabel, badge, stat, icon,
 } from '../lib/ui.js';
+import { softwareAgreementForm, renderSoftwareAgreementPreview } from './software-contract-editor.js';
 
 const STATE_OPTIONS = reference => [
   { value: '', label: 'Not selected' },
@@ -158,8 +159,8 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
   const existingDeliverables = existing?.deliverables
     ? (typeof existing.deliverables === 'string' ? JSON.parse(existing.deliverables) : existing.deliverables)
     : [
-      { type: 'Instagram Reel', quantity: 2, frequency: 'Monthly', deadline: '15th of each month', required_tags: '@nextoracreations #NextoraPOS', approval_requirements: 'Draft preview 48h prior', performance_metrics: 'Insights screenshot in 7d' },
-      { type: 'Product Demonstration', quantity: 1, frequency: 'Quarterly', deadline: 'End of quarter', required_tags: '@nextoracreations #NextoraPOSDemo', approval_requirements: 'Live outline approval', performance_metrics: 'Lead link clicks' },
+      { type: 'Instagram Reels', quantity: 4, frequency: 'Monthly', required_tags: '@nextora_pos, @nextora_creations', approval_requirements: 'Draft preview 48h prior', performance_metrics: 'Reach & engagement analytics' },
+      { type: 'Product Demonstration', quantity: 1, frequency: 'Quarterly', required_tags: '@nextora_pos, @nextora_creations', approval_requirements: 'Live outline approval', performance_metrics: 'Lead link clicks' },
     ];
 
   const agreement = existing || {
@@ -167,10 +168,10 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
     title: 'Influencer Marketing & Revenue-Sharing Agreement — Nextora POS',
     brand_name: 'Nextora Creations',
     product_name: 'Nextora POS',
-    commission_basis_points: 1000, // 10%
+    commission_basis_points: 5000, // 50%
     commission_basis: 'NET_SALES_EX_GST',
     custom_basis_description: '',
-    product_tax_mode: 'EXCLUSIVE',
+    product_tax_mode: 'INCLUSIVE',
     commission_tax_terms: 'EXCLUSIVE',
     influencer_gst_registered: false,
     influencer_gstin: '',
@@ -193,18 +194,26 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
   let currentDeliverables = [...existingDeliverables];
 
   function renderDeliverablesRows() {
-    return currentDeliverables.map((d, index) => `
-      <tr data-index="${index}" class="border-b border-outline">
-        <td class="p-2"><input type="text" class="input-text text-xs" name="del_type_${index}" value="${esc(d.type)}" placeholder="e.g. Reel, Story, Demo"></td>
-        <td class="p-2 w-16"><input type="number" min="1" class="input-text text-xs text-center" name="del_qty_${index}" value="${d.quantity || 1}"></td>
-        <td class="p-2 w-28"><input type="text" class="input-text text-xs" name="del_freq_${index}" value="${esc(d.frequency)}" placeholder="Monthly"></td>
-        <td class="p-2"><input type="text" class="input-text text-xs" name="del_deadline_${index}" value="${esc(d.deadline)}" placeholder="Deadline"></td>
-        <td class="p-2"><input type="text" class="input-text text-xs" name="del_tags_${index}" value="${esc(d.required_tags)}" placeholder="@nextoracreations"></td>
-        <td class="p-2 w-12 text-center">
-          <button type="button" data-del-remove="${index}" class="text-red-600 hover:text-red-800 text-xs">${icon('close')}</button>
-        </td>
-      </tr>
-    `).join('');
+    return currentDeliverables.map((d, index) => {
+      const isReel = String(d.type || '').toLowerCase().includes('reel');
+      const isDemo = String(d.type || '').toLowerCase().includes('demonstration');
+      const qty = isReel ? Math.max(4, Number(d.quantity || 4)) : (d.quantity || 1);
+      const handles = (isReel || isDemo)
+        ? '@nextora_pos, @nextora_creations'
+        : (d.required_tags || '@nextora_pos, @nextora_creations');
+
+      return `
+        <tr data-index="${index}" class="border-b border-outline">
+          <td class="p-2"><input type="text" class="input-text text-xs" name="del_type_${index}" value="${esc(d.type)}" placeholder="e.g. Instagram Reels, Product Demo"></td>
+          <td class="p-2 w-28"><input type="number" min="${isReel ? 4 : 1}" class="input-text text-xs text-center" name="del_qty_${index}" value="${qty}"></td>
+          <td class="p-2 w-32"><input type="text" class="input-text text-xs" name="del_freq_${index}" value="${esc(d.frequency || 'Monthly')}" placeholder="Monthly"></td>
+          <td class="p-2"><input type="text" class="input-text text-xs" name="del_tags_${index}" value="${esc(handles)}" placeholder="@nextora_pos, @nextora_creations"></td>
+          <td class="p-2 w-12 text-center">
+            <button type="button" data-del-remove="${index}" class="text-red-600 hover:text-red-800 text-xs">${icon('close')}</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
   }
 
   const node = modal({
@@ -397,11 +406,10 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
             <table class="w-full text-left text-xs border border-outline">
               <thead class="bg-surface-dim border-b border-outline">
                 <tr>
-                  <th class="p-2">Deliverable Type</th>
-                  <th class="p-2 w-16 text-center">Qty</th>
-                  <th class="p-2 w-28">Frequency</th>
-                  <th class="p-2">Deadline</th>
-                  <th class="p-2">Required Tags / CTA</th>
+                  <th class="p-2">Deliverable</th>
+                  <th class="p-2 w-28 text-center">Minimum Quantity</th>
+                  <th class="p-2 w-32">Frequency</th>
+                  <th class="p-2">Required Instagram Handles</th>
                   <th class="p-2 w-12"></th>
                 </tr>
               </thead>
@@ -448,8 +456,8 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
   // Dynamic deliverables handlers
   ctx.on('add-del-row', () => {
     currentDeliverables.push({
-      type: 'Instagram Story', quantity: 4, frequency: 'Monthly', deadline: 'Weekly on Fridays',
-      required_tags: '@nextoracreations #NextoraPOS', approval_requirements: '24h prior', performance_metrics: 'View count',
+      type: 'Instagram Reels', quantity: 4, frequency: 'Monthly',
+      required_tags: '@nextora_pos, @nextora_creations', approval_requirements: '24h prior', performance_metrics: 'Reach & engagement analytics',
     });
     const tbody = node.querySelector('#deliverables-tbody');
     if (tbody) tbody.innerHTML = renderDeliverablesRows();
@@ -469,15 +477,24 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
     const form = new FormData(node.querySelector('#agreement-form'));
 
     // Harvest deliverables
-    const deliverables = currentDeliverables.map((_, i) => ({
-      type: String(form.get(`del_type_${i}`) || 'Deliverable').trim(),
-      quantity: Number(form.get(`del_qty_${i}`) || 1),
-      frequency: String(form.get(`del_freq_${i}`) || 'Monthly').trim(),
-      deadline: String(form.get(`del_deadline_${i}`) || '').trim(),
-      required_tags: String(form.get(`del_tags_${i}`) || '').trim(),
-      approval_requirements: '',
-      performance_metrics: '',
-    })).filter(d => d.type.length > 0);
+    const deliverables = currentDeliverables.map((_, i) => {
+      const type = String(form.get(`del_type_${i}`) || 'Deliverable').trim();
+      const isReel = type.toLowerCase().includes('reel');
+      const isDemo = type.toLowerCase().includes('demonstration');
+      const rawQty = Number(form.get(`del_qty_${i}`) || 1);
+      const quantity = isReel ? Math.max(4, rawQty) : Math.max(1, rawQty);
+      const frequency = String(form.get(`del_freq_${i}`) || 'Monthly').trim();
+      const rawTags = String(form.get(`del_tags_${i}`) || '').trim();
+      const required_tags = rawTags || ((isReel || isDemo) ? '@nextora_pos, @nextora_creations' : '');
+      return {
+        type,
+        quantity,
+        frequency,
+        required_tags,
+        approval_requirements: '',
+        performance_metrics: '',
+      };
+    }).filter(d => d.type.length > 0);
 
     const commissionPercent = parseFloat(form.get('commission_percent') || '10');
     const commissionBp = Math.round(commissionPercent * 100);
@@ -656,7 +673,7 @@ async function renderDashboard(container, ctx) {
                   <td>${statusBadge(a.status)}</td>
                   <td class="text-right whitespace-nowrap">
                     <a href="#/marketing/contracts/${esc(a.id)}/preview" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2">Preview</a>
-                    <a href="/api/marketing/agreements/${esc(a.id)}/pdf" target="_blank" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Download PDF</a>
+                    <button type="button" data-action="download-agr-pdf" data-id="${esc(a.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent">Download PDF</button>
                   </td>
                 </tr>
               `).join('')}
@@ -673,6 +690,11 @@ async function renderDashboard(container, ctx) {
 
   ctx.on('new-influencer', () => influencerForm(ctx));
   ctx.on('new-agreement', () => agreementForm(ctx));
+  ctx.on('download-agr-pdf', async trigger => {
+    try {
+      await api.openDocument(`/api/marketing/agreements/${trigger.dataset.id}/pdf`, { download: true });
+    } catch (err) { toast(err.message, 'danger'); }
+  });
 }
 
 async function renderInfluencers(container, params, ctx) {
@@ -791,118 +813,197 @@ async function renderInfluencers(container, params, ctx) {
   });
 }
 
+function promptContractType(ctx) {
+  const node = modal({
+    title: 'Select Agreement Type',
+    body: `
+      <p class="text-xs text-on-surface-variant mb-4">Select the contract category you wish to create for Nextora Creations:</p>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="border-2 border-outline hover:border-cyan-accent p-4 cursor-pointer rounded transition-all bg-surface hover:bg-surface-dim group" id="type-opt-software">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="inline-flex p-2 rounded-full bg-cyan-50 text-cyan-accent">${icon('event_available')}</span>
+            <h4 class="font-bold text-sm text-on-surface group-hover:text-cyan-accent">Software Development Services</h4>
+          </div>
+          <p class="text-xs text-on-surface-variant leading-relaxed mb-4">
+            Professional software agreements for client projects. Features Schedule A scope table, 10% advance, milestone payments, 1-month timeline, 3 months free support, ₹5,000 post-support feature development, and optional ₹2,000/mo maintenance.
+          </p>
+          <div class="flex justify-end">
+            <span class="inline-flex items-center gap-1.5 text-xs font-bold text-cyan-accent">Configure Software Contract →</span>
+          </div>
+        </div>
+
+        <div class="border-2 border-outline hover:border-primary p-4 cursor-pointer rounded transition-all bg-surface hover:bg-surface-dim group" id="type-opt-influencer">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="inline-flex p-2 rounded-full bg-purple-50 text-purple-700">${icon('campaign')}</span>
+            <h4 class="font-bold text-sm text-on-surface group-hover:text-primary">Influencer Marketing &amp; Rev-Share</h4>
+          </div>
+          <p class="text-xs text-on-surface-variant leading-relaxed mb-4">
+            Marketing partnership contracts for creators promoting Nextora POS. Includes agreed revenue-sharing %, TDS Section 194H withholding, and social media deliverables.
+          </p>
+          <div class="flex justify-end">
+            <span class="inline-flex items-center gap-1.5 text-xs font-bold text-primary">Configure Influencer Contract →</span>
+          </div>
+        </div>
+      </div>
+    `,
+    footer: `${button({ label: 'Cancel', action: 'close-modal' })}`,
+  });
+
+  node.querySelector('#type-opt-software')?.addEventListener('click', () => {
+    closeModal();
+    softwareAgreementForm(ctx);
+  });
+  node.querySelector('#type-opt-influencer')?.addEventListener('click', () => {
+    closeModal();
+    agreementForm(ctx);
+  });
+}
+
 async function renderAgreements(container, params, ctx) {
   const filters = ctx.filters || {};
   container.innerHTML = pageHeader({
-    title: 'Marketing Contracts & Agreements',
-    subtitle: 'Revenue-sharing agreements, GST commercial terms, deliverables, and formal PDF generation.',
-    actions: button({ label: 'New Agreement', action: 'new-agreement', variant: 'primary', icon: 'add' }),
+    title: 'Contracts & Agreements',
+    subtitle: 'Client software development contracts, influencer revenue-sharing agreements, GST commercial terms, and formal PDF generation.',
+    actions: button({ label: 'New Contract', action: 'new-agreement', variant: 'primary', icon: 'add' }),
   }) + tabs('contracts') + loading();
 
   let data;
   try {
-    data = await api.get(`/api/marketing/agreements${query({
-      search: filters.search, status: filters.status, page: ctx.page,
+    data = await api.get(`/api/marketing/contracts${query({
+      search: filters.search, status: filters.status, contract_type: filters.contract_type, page: ctx.page,
     })}`);
   } catch (error) {
-    container.innerHTML = pageHeader({ title: 'Marketing Contracts & Agreements' }) + tabs('contracts') + alertBox(error.message, 'danger');
+    container.innerHTML = pageHeader({ title: 'Contracts & Agreements' }) + tabs('contracts') + alertBox(error.message, 'danger');
     return;
   }
 
+  const contracts = data.contracts || [];
+
   container.innerHTML = `
     ${pageHeader({
-      title: 'Marketing Contracts & Agreements',
-      subtitle: 'Revenue-sharing agreements, GST commercial terms, deliverables, and formal PDF generation.',
-      actions: button({ label: 'New Agreement', action: 'new-agreement', variant: 'primary', icon: 'add' }),
+      title: 'Contracts & Agreements',
+      subtitle: 'Client software development contracts, influencer revenue-sharing agreements, GST commercial terms, and formal PDF generation.',
+      actions: button({ label: 'New Contract', action: 'new-agreement', variant: 'primary', icon: 'add' }),
     })}
     ${tabs('contracts')}
 
     ${card({
       body: `
         <form id="agreement-filters" class="flex flex-wrap items-end gap-3 border-b border-outline px-5 py-4">
-          ${field({ label: 'Search', name: 'search', value: filters.search || '', placeholder: 'Contract #, influencer, Instagram handle...', className: '' })}
+          ${field({ label: 'Search', name: 'search', value: filters.search || '', placeholder: 'Contract #, client name, influencer, service...', className: 'min-w-[200px]' })}
+          ${field({ label: 'Agreement Type', name: 'contract_type', options: [
+            { value: '', label: 'All Agreement Types' },
+            { value: 'SOFTWARE_SERVICES', label: 'Software Development Services' },
+            { value: 'INFLUENCER', label: 'Influencer Marketing' },
+          ], value: filters.contract_type || '', className: '' })}
           ${field({ label: 'Status', name: 'status', options: [
             { value: '', label: 'All Statuses' },
             { value: 'DRAFT', label: 'Draft' },
             { value: 'PENDING_APPROVAL', label: 'Pending Approval' },
+            { value: 'APPROVED', label: 'Approved' },
             { value: 'SENT', label: 'Sent' },
             { value: 'ACCEPTED', label: 'Accepted' },
             { value: 'SIGNED', label: 'Signed' },
             { value: 'ACTIVE', label: 'Active' },
+            { value: 'COMPLETED', label: 'Completed' },
             { value: 'TERMINATED', label: 'Terminated' },
+            { value: 'CANCELLED', label: 'Cancelled' },
           ], value: filters.status || '', className: '' })}
           <div class="flex gap-2 pb-0.5">${button({ label: 'Search', type: 'submit', variant: 'primary' })}</div>
         </form>
 
-        ${data.agreements.length ? `
+        ${contracts.length ? `
           <div class="overflow-x-auto">
             <table class="data-table w-full min-w-[950px]">
               <thead>
                 <tr>
                   <th>Contract #</th>
-                  <th>Influencer Name</th>
-                  <th>Instagram Handle</th>
-                  <th class="text-right">Revenue Share</th>
-                  <th>GST Treatment</th>
-                  <th>Effective Period</th>
+                  <th>Agreement Type</th>
+                  <th>Client / Partner</th>
+                  <th>Service / Product</th>
+                  <th class="text-right">Commercial Value</th>
                   <th>Status</th>
                   <th>PDF Generated</th>
                   <th class="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${data.agreements.map(row => `
-                  <tr>
-                    <td class="font-mono text-xs font-medium">
-                      <a href="#/marketing/contracts/${esc(row.id)}/preview" class="underline decoration-outline underline-offset-2 hover:decoration-cyan-accent font-bold">${esc(row.contract_number)}</a>
-                      <div class="text-[10px] text-on-surface-variant">v${row.version || 1}</div>
-                    </td>
-                    <td class="text-xs">
-                      <div class="font-medium">${esc(row.influencer_legal_name || '—')}</div>
-                      <div class="text-on-surface-variant">${esc(row.influencer_display_name || '')}</div>
-                    </td>
-                    <td class="font-mono text-xs text-on-surface-variant">${esc(row.influencer_instagram_username || '—')}</td>
-                    <td class="num text-right font-bold text-xs">${(row.commission_basis_points / 100).toFixed(2)}%</td>
-                    <td class="text-[11px]">
-                      <div>Sales: <span class="font-mono font-medium">${esc(row.product_tax_mode)}</span></div>
-                      <div class="text-on-surface-variant">Comm: <span class="font-mono">${esc(row.commission_tax_terms)}</span></div>
-                    </td>
-                    <td class="text-xs text-on-surface-variant">
-                      ${date(row.start_date)} – ${row.is_indefinite ? '<span class="italic">Indefinite</span>' : date(row.end_date)}
-                    </td>
-                    <td>${statusBadge(row.status)}</td>
-                    <td class="text-xs text-on-surface-variant">${row.pdf_generated_at ? date(row.pdf_generated_at.slice(0, 10)) : '<span class="italic">Not yet</span>'}</td>
-                    <td class="text-right whitespace-nowrap">
-                      <a href="#/marketing/contracts/${esc(row.id)}/preview" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Preview</a>
-                      <a href="/api/marketing/agreements/${esc(row.id)}/pdf" target="_blank" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Download</a>
-                      ${['DRAFT', 'PENDING_APPROVAL'].includes(row.status)
-                        ? `<button type="button" data-action="edit-draft-agreement" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-3">Edit</button>`
-                        : ''}
-                      <button type="button" data-action="duplicate-agreement" data-id="${esc(row.id)}" class="text-xs text-on-surface-variant hover:text-on-surface">Copy</button>
-                    </td>
-                  </tr>
-                `).join('')}
+                ${contracts.map(row => {
+                  const isSoftware = row.contract_type === 'SOFTWARE_SERVICES';
+                  const previewHref = isSoftware
+                    ? `#/marketing/contracts/software/${esc(row.id)}/preview`
+                    : `#/marketing/contracts/${esc(row.id)}/preview`;
+                  const pdfUrl = isSoftware
+                    ? `/api/marketing/software-agreements/${esc(row.id)}/pdf`
+                    : `/api/marketing/agreements/${esc(row.id)}/pdf`;
+
+                  return `
+                    <tr>
+                      <td class="font-mono text-xs font-medium">
+                        <a href="${previewHref}" class="underline decoration-outline underline-offset-2 hover:decoration-cyan-accent font-bold">${esc(row.contract_number)}</a>
+                        <div class="text-[10px] text-on-surface-variant">v${row.version || 1}</div>
+                      </td>
+                      <td class="text-xs">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold ${isSoftware ? 'bg-cyan-50 text-cyan-900 border border-cyan-200' : 'bg-purple-50 text-purple-900 border border-purple-200'}">
+                          ${isSoftware ? 'Software Services' : 'Influencer Marketing'}
+                        </span>
+                      </td>
+                      <td class="text-xs">
+                        <div class="font-medium">${esc(row.counterparty_name || '—')}</div>
+                        ${row.secondary_info ? `<div class="text-on-surface-variant text-[11px]">${esc(row.secondary_info)}</div>` : ''}
+                      </td>
+                      <td class="text-xs text-on-surface-variant">
+                        ${esc(row.title || row.service_category || row.product_name || '—')}
+                      </td>
+                      <td class="num text-right font-bold text-xs font-mono">
+                        ${esc(row.commercial_summary)}
+                      </td>
+                      <td>${statusBadge(row.status)}</td>
+                      <td class="text-xs text-on-surface-variant">${row.pdf_generated_at ? date(row.pdf_generated_at.slice(0, 10)) : '<span class="italic">Not yet</span>'}</td>
+                      <td class="text-right whitespace-nowrap">
+                        <a href="${previewHref}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Preview</a>
+                        <button type="button" data-action="download-contract-pdf" data-url="${pdfUrl}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Download</button>
+                        ${['DRAFT', 'PENDING_APPROVAL'].includes(row.status)
+                          ? `<button type="button" data-action="${isSoftware ? 'edit-draft-sw-agreement' : 'edit-draft-agreement'}" data-id="${esc(row.id)}" class="text-xs underline decoration-outline underline-offset-2 hover:decoration-cyan-accent mr-2.5">Edit</button>`
+                          : ''}
+                        <button type="button" data-action="${isSoftware ? 'duplicate-sw-agreement' : 'duplicate-agreement'}" data-id="${esc(row.id)}" class="text-xs text-on-surface-variant hover:text-on-surface">Copy</button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
           ${pagination({ page: data.page, total: data.total, limit: data.limit })}
         ` : emptyState({
-          icon: 'request_quote', title: 'No agreements found',
-          message: 'Configure a revenue-sharing agreement to generate formal influencer marketing contracts.',
-          actionLabel: 'New Agreement', action: 'new-agreement',
+          icon: 'request_quote', title: 'No contracts found',
+          message: 'Create a software development services agreement or influencer marketing partnership contract.',
+          actionLabel: 'New Contract', action: 'new-agreement',
         })}
       `,
     })}
   `;
 
-  ctx.on('new-agreement', () => agreementForm(ctx));
+  ctx.on('new-agreement', () => promptContractType(ctx));
 
   container.querySelector('#agreement-filters')?.addEventListener('submit', e => {
     e.preventDefault();
     const form = new FormData(e.target);
-    ctx.setFilters({ search: form.get('search'), status: form.get('status') });
+    ctx.setFilters({ search: form.get('search'), status: form.get('status'), contract_type: form.get('contract_type') });
     ctx.setPage(1);
     ctx.rerender();
+  });
+
+  ctx.on('download-contract-pdf', async trigger => {
+    const url = trigger.dataset.url;
+    try {
+      await api.openDocument(url, { download: true });
+      toast('Contract PDF downloaded successfully.');
+    } catch (err) {
+      if (!err.message?.includes('canceled') && !err.message?.includes('cancelled')) {
+        toast(err.message, 'danger');
+      }
+    }
   });
 
   ctx.on('edit-draft-agreement', async trigger => {
@@ -913,12 +1014,29 @@ async function renderAgreements(container, params, ctx) {
     } catch (err) { toast(err.message, 'danger'); }
   });
 
+  ctx.on('edit-draft-sw-agreement', async trigger => {
+    const id = trigger.dataset.id;
+    try {
+      const res = await api.get(`/api/marketing/software-agreements/${id}`);
+      softwareAgreementForm(ctx, res.agreement);
+    } catch (err) { toast(err.message, 'danger'); }
+  });
+
   ctx.on('duplicate-agreement', async trigger => {
     const id = trigger.dataset.id;
     try {
       const res = await api.post(`/api/marketing/agreements/${id}/duplicate`);
       toast('Draft duplicate created.');
       ctx.navigate(`#/marketing/contracts/${res.agreement.id}/preview`);
+    } catch (err) { toast(err.message, 'danger'); }
+  });
+
+  ctx.on('duplicate-sw-agreement', async trigger => {
+    const id = trigger.dataset.id;
+    try {
+      const res = await api.post(`/api/marketing/software-agreements/${id}/duplicate`);
+      toast('Draft duplicate created.');
+      ctx.navigate(`#/marketing/contracts/software/${res.agreement.id}/preview`);
     } catch (err) { toast(err.message, 'danger'); }
   });
 }
@@ -950,10 +1068,8 @@ async function renderContractPreview(container, agreementId, ctx) {
       subtitle: `${esc(s.title)} · Version ${s.version || 1}`,
       breadcrumb: '<a href="#/marketing" class="hover:underline">Marketing</a> / <a href="#/marketing/contracts" class="hover:underline">Contracts</a> / Preview',
       actions: `
-        ${button({ label: 'Generate PDF', action: 'generate-pdf-btn', variant: 'primary', icon: 'download' })}
-        <a href="/api/marketing/agreements/${esc(s.contract_id)}/pdf" target="_blank" class="inline-flex items-center gap-2 border px-3.5 py-2 text-sm font-medium border-outline bg-surface text-primary hover:bg-surface-dim">
-          ${icon('download')}<span>Download PDF</span>
-        </a>
+        ${button({ label: 'Generate PDF', action: 'generate-pdf-btn', variant: 'primary', icon: 'picture_as_pdf' })}
+        ${button({ label: 'Download PDF', action: 'download-pdf-btn', variant: 'secondary', icon: 'download' })}
         ${['DRAFT', 'PENDING_APPROVAL'].includes(s.status)
           ? button({ label: 'Edit Draft', action: 'edit-preview-draft', variant: 'secondary' })
           : ''}
@@ -1042,25 +1158,31 @@ async function renderContractPreview(container, agreementId, ctx) {
         ${deliverables.length ? `
           <div class="overflow-x-auto border border-outline">
             <table class="w-full text-left text-xs">
-              <thead class="bg-surface-dim border-b border-outline">
+              <thead class="bg-surface-dim border-b border-outline font-mono text-[11px] uppercase">
                 <tr>
                   <th class="p-2.5">Deliverable</th>
-                  <th class="p-2.5 text-center w-16">Qty</th>
+                  <th class="p-2.5 text-center w-24">Min. Qty</th>
                   <th class="p-2.5">Frequency</th>
-                  <th class="p-2.5">Deadline</th>
-                  <th class="p-2.5">Required Tags / CTA</th>
+                  <th class="p-2.5">Required Instagram Handles</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-outline">
-                ${deliverables.map(d => `
-                  <tr>
-                    <td class="p-2.5 font-medium">${esc(d.type)}</td>
-                    <td class="p-2.5 text-center font-mono">${d.quantity}</td>
-                    <td class="p-2.5 text-on-surface-variant">${esc(d.frequency)}</td>
-                    <td class="p-2.5 text-on-surface-variant">${esc(d.deadline || 'Standard campaign timeline')}</td>
-                    <td class="p-2.5 font-mono text-[11px] text-on-surface-variant">${esc(d.required_tags || '—')}</td>
-                  </tr>
-                `).join('')}
+                ${deliverables.map(d => {
+                  const isReel = String(d.type || '').toLowerCase().includes('reel');
+                  const isDemo = String(d.type || '').toLowerCase().includes('demonstration');
+                  const qty = isReel ? Math.max(4, Number(d.quantity || 4)) : (d.quantity || 1);
+                  const handles = (isReel || isDemo)
+                    ? '@nextora_pos, @nextora_creations'
+                    : (d.required_tags || '@nextora_pos, @nextora_creations');
+                  return `
+                    <tr>
+                      <td class="p-2.5 font-medium">${esc(d.type)}</td>
+                      <td class="p-2.5 text-center font-mono font-bold">${qty}</td>
+                      <td class="p-2.5 text-on-surface-variant">${esc(d.frequency || 'Monthly')}</td>
+                      <td class="p-2.5 font-mono text-[11px] text-primary font-medium">${esc(handles)}</td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
@@ -1076,28 +1198,66 @@ async function renderContractPreview(container, agreementId, ctx) {
           ${esc(s.clauses.section_4_revenue_terms)}
         </div>
 
-        <!-- Illustrative Table -->
+        <!-- Section 4 Products & Calculation Table -->
         ${calc ? `
-          <div class="border border-outline bg-surface-dim p-4 my-4">
-            <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-primary mb-2">Illustrative Calculation Example (Non-Binding)</h4>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div>
-                <p class="text-on-surface-variant">Hypothetical Sale Amount:</p>
-                <p class="font-mono font-bold">${money(calc.sample_sale_minor)}</p>
-                <p class="text-[10px] text-on-surface-variant mt-0.5">Product Tax Mode: GST ${esc(c.product_tax_mode)}</p>
+          <div class="my-6 border border-outline bg-surface-dim p-4">
+            <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-primary mb-3">
+              Illustrative Calculation Example (Non-Binding)
+            </h4>
+            <div class="overflow-x-auto border border-outline bg-surface mb-4">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-surface-dim border-b border-outline font-mono text-[10px] uppercase text-on-surface-variant">
+                  <tr>
+                    <th class="p-2.5">Product</th>
+                    <th class="p-2.5 text-right">Price (Incl. GST)</th>
+                    <th class="p-2.5 text-center">GST Rate</th>
+                    <th class="p-2.5 text-right">GST Amount</th>
+                    <th class="p-2.5 text-right">Net Value (Ex. GST)</th>
+                    <th class="p-2.5 text-center">Comm. %</th>
+                    <th class="p-2.5 text-right">Influencer Comm.</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-outline">
+                  ${(calc.products || [
+                    { name: 'Nextora POS Mobile App', gross_sale_minor: 599900, gst_rate_percent: '18%', gst_amount_minor: 91510, net_sale_minor: 508390, commission_rate_percent: `${calc.commission_percentage || '50.00'}%`, commission_minor: 254195 },
+                    { name: 'Nextora POS Desktop', gross_sale_minor: 799900, gst_rate_percent: '18%', gst_amount_minor: 122019, net_sale_minor: 677881, commission_rate_percent: `${calc.commission_percentage || '50.00'}%`, commission_minor: 338941 }
+                  ]).map(p => `
+                    <tr>
+                      <td class="p-2.5 font-medium">${esc(p.name)}</td>
+                      <td class="p-2.5 text-right font-mono">${money(p.gross_sale_minor)}</td>
+                      <td class="p-2.5 text-center font-mono text-on-surface-variant">${esc(p.gst_rate_percent)}</td>
+                      <td class="p-2.5 text-right font-mono text-on-surface-variant">${money(p.gst_amount_minor)}</td>
+                      <td class="p-2.5 text-right font-mono font-medium">${money(p.net_sale_minor)}</td>
+                      <td class="p-2.5 text-center font-mono text-primary">${esc(p.commission_rate_percent)}</td>
+                      <td class="p-2.5 text-right font-mono font-bold text-cyan-accent">${money(p.commission_minor)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <!-- GST Classification Cards (Telangana Intra-State vs Interstate) -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs mb-3">
+              <div class="border border-outline bg-surface p-3">
+                <p class="label-technical text-[10px] text-primary">Telangana Intra-State Supplies (CGST 9% + SGST 9%)</p>
+                <div class="mt-2 space-y-1 text-[11px] text-on-surface-variant">
+                  <div>• <span class="font-medium text-on-surface">Mobile App:</span> CGST ₹457.55 + SGST ₹457.55 = Total GST ₹915.10</div>
+                  <div>• <span class="font-medium text-on-surface">Desktop:</span> CGST ₹610.10 + SGST ₹610.09 = Total GST ₹1,220.19</div>
+                </div>
               </div>
-              <div>
-                <p class="text-on-surface-variant">Agreed Commission Rate:</p>
-                <p class="font-mono font-bold text-cyan-accent">${calc.commission_percentage}%</p>
-                <p class="text-[10px] text-on-surface-variant mt-0.5">Basis: ${esc(calc.basis_explanation)}</p>
-              </div>
-              <div>
-                <p class="text-on-surface-variant">Net Influencer Payout:</p>
-                <p class="font-mono font-bold text-emerald-700">${money(calc.net_commission_payable_minor)}</p>
-                <p class="text-[10px] text-on-surface-variant mt-0.5">Less ${(calc.withholding_tax_rate_bp / 100).toFixed(2)}% TDS (${esc(c.withholding_section)})</p>
+              <div class="border border-outline bg-surface p-3">
+                <p class="label-technical text-[10px] text-primary">Interstate Supplies (IGST 18%)</p>
+                <div class="mt-2 space-y-1 text-[11px] text-on-surface-variant">
+                  <div>• <span class="font-medium text-on-surface">Mobile App:</span> IGST ₹915.10 (18%)</div>
+                  <div>• <span class="font-medium text-on-surface">Desktop:</span> IGST ₹1,220.19 (18%)</div>
+                  <div class="text-[10px] text-on-surface-variant italic mt-1">Commission calculated strictly on Net Sale Value excluding GST.</div>
+                </div>
               </div>
             </div>
-            <p class="text-[10px] text-on-surface-variant italic mt-3 border-t border-outline pt-2">${esc(calc.disclaimer)}</p>
+
+            <p class="text-[10px] text-on-surface-variant italic border-t border-outline pt-2">
+              ${esc(calc.products_disclaimer || calc.disclaimer || 'Illustrative calculation based on the listed retail prices and the stated GST rate. Actual commission is calculated on verified eligible sales under this agreement, subject to applicable cancellations, refunds, chargebacks, and other agreed adjustments.')}
+            </p>
           </div>
         ` : ''}
       </div>
@@ -1191,9 +1351,16 @@ async function renderContractPreview(container, agreementId, ctx) {
 
   ctx.on('generate-pdf-btn', async () => {
     try {
-      const res = await api.post(`/api/marketing/agreements/${agreementId}/generate-pdf`);
+      await api.post(`/api/marketing/agreements/${agreementId}/generate-pdf`);
       toast('Contract PDF generated and snapshot preserved.');
+      await api.openDocument(`/api/marketing/agreements/${agreementId}/pdf?view=true`, { download: false });
       ctx.rerender();
+    } catch (err) { toast(err.message, 'danger'); }
+  });
+
+  ctx.on('download-pdf-btn', async () => {
+    try {
+      await api.openDocument(`/api/marketing/agreements/${agreementId}/pdf`, { download: true });
     } catch (err) { toast(err.message, 'danger'); }
   });
 
@@ -1256,6 +1423,10 @@ async function renderBrandAssets(container, ctx) {
     subtitle: 'Manage Nextora Creations corporate logo and Nextora POS product logo for agreements and invoices.',
   }) + tabs('brand-assets') + loading();
 
+  const assets = await api.get('/api/marketing/brand-assets').catch(() => ({ product_logo: {}, company_logo: {} }));
+  const prodExists = Boolean(assets?.product_logo?.exists && assets.product_logo.dataUri);
+  const compExists = Boolean(assets?.company_logo?.exists && assets.company_logo.dataUri);
+
   container.innerHTML = `
     ${pageHeader({
       title: 'Brand Assets & Logos',
@@ -1271,10 +1442,9 @@ async function renderBrandAssets(container, ctx) {
         body: `
           <div class="p-5">
             <div class="mb-4 flex items-center justify-center border border-dashed border-outline bg-surface-dim h-40 p-4">
-              <img id="product-logo-img" src="/api/marketing/product-logo?t=${Date.now()}" alt="Nextora POS Logo"
-                class="max-h-32 max-w-full object-contain"
-                onerror="this.style.display='none'; document.getElementById('prod-logo-placeholder').style.display='block';">
-              <div id="prod-logo-placeholder" class="hidden text-center text-xs text-on-surface-variant">
+              <img id="product-logo-img" src="${prodExists ? assets.product_logo.dataUri : ''}" alt="Nextora POS Logo"
+                class="max-h-32 max-w-full object-contain ${prodExists ? '' : 'hidden'}">
+              <div id="prod-logo-placeholder" class="${prodExists ? 'hidden' : ''} text-center text-xs text-on-surface-variant">
                 ${icon('campaign', '!text-[36px] block mx-auto mb-2')}
                 <span>No product logo uploaded yet.<br>Contract will use clean text header.</span>
               </div>
@@ -1301,10 +1471,9 @@ async function renderBrandAssets(container, ctx) {
         body: `
           <div class="p-5">
             <div class="mb-4 flex items-center justify-center border border-dashed border-outline bg-surface-dim h-40 p-4">
-              <img id="company-logo-img" src="/api/settings/logo?t=${Date.now()}" alt="Nextora Creations Company Logo"
-                class="max-h-32 max-w-full object-contain"
-                onerror="this.style.display='none'; document.getElementById('comp-logo-placeholder').style.display='block';">
-              <div id="comp-logo-placeholder" class="hidden text-center text-xs text-on-surface-variant">
+              <img id="company-logo-img" src="${compExists ? assets.company_logo.dataUri : ''}" alt="Nextora Creations Company Logo"
+                class="max-h-32 max-w-full object-contain ${compExists ? '' : 'hidden'}">
+              <div id="comp-logo-placeholder" class="${compExists ? 'hidden' : ''} text-center text-xs text-on-surface-variant">
                 ${icon('receipt_long', '!text-[36px] block mx-auto mb-2')}
                 <span>No company logo uploaded yet.<br>Default typographic header used.</span>
               </div>
@@ -1330,12 +1499,30 @@ async function renderBrandAssets(container, ctx) {
     const input = container.querySelector('#prod-logo-input');
     const file = input?.files?.[0];
     if (!file) { toast('Please choose an image file first.', 'warn'); return; }
+    if (!['image/png', 'image/jpeg'].includes(file.type) && !file.name.match(/\.(png|jpe?g)$/i)) {
+      toast('Please choose a valid PNG or JPEG image.', 'danger');
+      return;
+    }
     if (file.size > 1048576) { toast('Product logo must be 1 MB or smaller.', 'danger'); return; }
 
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        await api.post('/api/marketing/product-logo', { logo: String(reader.result) });
+        const dataUri = String(reader.result);
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            if (img.width < 40 || img.height < 20 || img.width > 2500 || img.height > 2500) {
+              reject(new Error(`Image dimensions ${img.width}x${img.height} are out of range (must be between 40x20 and 2500x2500).`));
+            } else {
+              resolve();
+            }
+          };
+          img.onerror = () => reject(new Error('Invalid or unreadable image file.'));
+          img.src = dataUri;
+        });
+
+        await api.post('/api/marketing/product-logo', { logo: dataUri });
         toast('Nextora POS product logo uploaded successfully.');
         ctx.rerender();
       } catch (err) { toast(err.message, 'danger'); }
@@ -1347,12 +1534,30 @@ async function renderBrandAssets(container, ctx) {
     const input = container.querySelector('#comp-logo-input');
     const file = input?.files?.[0];
     if (!file) { toast('Please choose an image file first.', 'warn'); return; }
+    if (file.type !== 'image/png' && !file.name.match(/\.png$/i)) {
+      toast('Company logo must be a valid PNG image.', 'danger');
+      return;
+    }
     if (file.size > 512000) { toast('Company logo must be 500 KB or smaller.', 'danger'); return; }
 
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        await api.post('/api/settings/logo', { png: String(reader.result) });
+        const dataUri = String(reader.result);
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            if (img.width < 40 || img.height < 20 || img.width > 2000 || img.height > 2000) {
+              reject(new Error(`Image dimensions ${img.width}x${img.height} are out of range.`));
+            } else {
+              resolve();
+            }
+          };
+          img.onerror = () => reject(new Error('Invalid or unreadable PNG file.'));
+          img.src = dataUri;
+        });
+
+        await api.post('/api/settings/logo', { png: dataUri });
         toast('Corporate logo uploaded successfully.');
         ctx.rerender();
       } catch (err) { toast(err.message, 'danger'); }
@@ -1876,9 +2081,15 @@ export const render = async (container, params, ctx) => {
       await renderInfluencers(container, params, ctx);
     }
   } else if (sub === 'contracts' || sub === 'agreements') {
-    if (segments[2] === 'new') {
+    if (segments[2] === 'software' && segments[4] === 'preview') {
+      await renderSoftwareAgreementPreview(container, segments[3], ctx);
+    } else if (segments[2] === 'software' && segments[4] === 'edit') {
       await renderAgreements(container, params, ctx);
-      agreementForm(ctx);
+      const res = await api.get(`/api/marketing/software-agreements/${segments[3]}`);
+      softwareAgreementForm(ctx, res.agreement);
+    } else if (segments[2] === 'new') {
+      await renderAgreements(container, params, ctx);
+      promptContractType(ctx);
     } else if (segments[2] && segments[3] === 'preview') {
       await renderContractPreview(container, segments[2], ctx);
     } else if (segments[2] && segments[3] === 'edit') {

@@ -18,7 +18,7 @@ The Influencer acknowledges and agrees that they act solely as an independent ma
 1. Qualifying Eligible Sales: An eligible sale is defined as a verified, successfully paid subscription, license, or purchase of Nextora POS directly attributable to the Influencer through authorized tracking mechanisms (including assigned referral codes, tracking URLs, or approved customer attribution records).
 2. Attribution Window & Deductions: Transactions subject to chargebacks, cancellations, approved refunds, bad debts, or unpaid invoices shall not generate commission, and any commission previously credited for such transactions shall be adjusted against future payouts.
 3. Tax Integrity: GST collected by Nextora Creations on behalf of tax authorities does not constitute commissionable revenue under Net Revenue calculation bases. Influencer commission invoices shall be subject to applicable statutory tax deduction at source (TDS) as per prevailing income tax regulations.
-4. Threshold & Schedule: Payouts shall be processed according to the agreed payment frequency following reconciliation, provided accrued earnings exceed the agreed minimum payout threshold. Balances below the threshold carry forward to the subsequent cycle.
+4. Threshold & Monthly Commission Settlement: Subject to reconciliation of verified eligible sales, applicable deductions, and any required documentation, commission payments shall be processed during the first week of each calendar month for the preceding settlement period, provided accrued earnings meet or exceed the agreed minimum payout threshold. The payable amount shall be calculated using the agreed commission rate on eligible net sales revenue excluding GST, after accounting for approved refunds, cancellations, chargebacks, and other agreed adjustments. Balances below the threshold carry forward to the subsequent settlement cycle.
 5. Pending Commissions at Expiry: Upon termination or expiry without breach, verified commissions earned up to the effective date of termination shall be settled in accordance with standard reconciliation schedules.`,
 
   section_5_conduct_obligations: `The Influencer agrees to maintain professional conduct and protect brand reputation at all times:
@@ -36,7 +36,7 @@ The Influencer acknowledges and agrees that they act solely as an independent ma
   section_7_payment_invoicing: `1. Reconciliation & Reporting: Nextora Creations shall provide periodic commission statements detailing attributed eligible transactions, deductions, and calculated revenue share.
 2. Invoicing & Documentation: The Influencer shall submit a valid invoice (including GST invoice if GST-registered, or payment receipt) together with required PAN and banking details.
 3. Statutory Deductions: Nextora Creations shall deduct applicable Tax Deducted at Source (TDS) pursuant to Section 194H or 194J of the Income Tax Act, 1961, and furnish corresponding TDS certificates (Form 16A) in accordance with statutory timelines.
-4. Payment Settlement: Approved commissions shall be remitted via electronic bank transfer (NEFT/RTGS/IMPS/UPI) to the Influencer's designated bank account within the agreed payment due period following invoice verification.`,
+4. Monthly Payment Settlement: Subject to reconciliation of verified eligible sales, applicable deductions, and any required documentation, commission payments shall be processed during the first week of each calendar month for the preceding settlement period. Approved commissions shall be remitted via electronic bank transfer (NEFT/RTGS/IMPS/UPI) to the Influencer's designated bank account following verification.`,
 
   section_8_term_termination: `1. Term: This Agreement commences on the Start Date and continues until the End Date, or indefinitely if so configured, unless earlier terminated in accordance with this section.
 2. Termination for Convenience: Either party may terminate this Agreement by providing thirty (30) days prior written notice to the other party.
@@ -114,6 +114,77 @@ export function calculateIllustrativeCommission({
     withholding_minor: withholdingMinor,
     net_commission_payable_minor: netCommissionPayableMinor,
     disclaimer: 'ILLUSTRATIVE CALCULATION EXAMPLE ONLY: The figures above are provided strictly for illustrative and explanatory purposes to demonstrate the calculation mechanics agreed herein. They do not constitute a guarantee, forecast, or representation of minimum or expected earnings.'
+  };
+}
+
+export function calculateContractProductIllustrations(commissionBasisPoints = 5000) {
+  const rateBp = commissionBasisPoints > 0 ? commissionBasisPoints : 5000;
+  const ratePercent = (rateBp / 100).toFixed(2);
+
+  // Product 1: Nextora POS Mobile App (₹5,999.00 GST-inclusive @ 18% GST)
+  const mobileGrossMinor = 599900;
+  const mobileNetMinor = 508390; // 599900 * 100 / 118 rounded
+  const mobileGstMinor = 91510;
+  const mobileCommMinor = Math.round((mobileNetMinor * rateBp) / 10000); // 254195 @ 50%
+  const mobileCgstMinor = 45755;
+  const mobileSgstMinor = 45755;
+
+  // Product 2: Nextora POS Desktop (₹7,999.00 GST-inclusive @ 18% GST)
+  const desktopGrossMinor = 799900;
+  const desktopNetMinor = 677881; // 799900 * 100 / 118 rounded
+  const desktopGstMinor = 122019;
+  const desktopCommMinor = Math.round((desktopNetMinor * rateBp) / 10000); // 338941 @ 50%
+  const desktopCgstMinor = 61010;
+  const desktopSgstMinor = 61009; // 610.10 + 610.09 = 1,220.19
+
+  return {
+    commission_rate_bp: rateBp,
+    commission_percentage: ratePercent,
+    disclaimer: 'Illustrative calculation based on the listed retail prices and the stated GST rate. Actual commission is calculated on verified eligible sales under this agreement, subject to applicable cancellations, refunds, chargebacks, and other agreed adjustments.',
+    products: [
+      {
+        name: 'Nextora POS Mobile App',
+        gross_sale_minor: mobileGrossMinor,
+        gst_rate_percent: '18%',
+        gst_amount_minor: mobileGstMinor,
+        net_sale_minor: mobileNetMinor,
+        commission_rate_percent: `${ratePercent}%`,
+        commission_minor: mobileCommMinor,
+        intra_state_telangana: {
+          cgst_rate: '9%',
+          cgst_minor: mobileCgstMinor,
+          sgst_rate: '9%',
+          sgst_minor: mobileSgstMinor,
+          total_gst_minor: mobileGstMinor,
+        },
+        interstate: {
+          igst_rate: '18%',
+          igst_minor: mobileGstMinor,
+          total_gst_minor: mobileGstMinor,
+        },
+      },
+      {
+        name: 'Nextora POS Desktop',
+        gross_sale_minor: desktopGrossMinor,
+        gst_rate_percent: '18%',
+        gst_amount_minor: desktopGstMinor,
+        net_sale_minor: desktopNetMinor,
+        commission_rate_percent: `${ratePercent}%`,
+        commission_minor: desktopCommMinor,
+        intra_state_telangana: {
+          cgst_rate: '9%',
+          cgst_minor: desktopCgstMinor,
+          sgst_rate: '9%',
+          sgst_minor: desktopSgstMinor,
+          total_gst_minor: desktopGstMinor,
+        },
+        interstate: {
+          igst_rate: '18%',
+          igst_minor: desktopGstMinor,
+          total_gst_minor: desktopGstMinor,
+        },
+      },
+    ],
   };
 }
 
@@ -645,7 +716,7 @@ export async function buildContractSnapshot(db, agreementId) {
     ...customClauses,
   };
 
-  const illustrativeCalculation = calculateIllustrativeCommission({
+  const baseIllustrative = calculateIllustrativeCommission({
     commission_basis_points: agreement.commission_basis_points,
     commission_basis: agreement.commission_basis,
     product_tax_mode: agreement.product_tax_mode,
@@ -655,6 +726,13 @@ export async function buildContractSnapshot(db, agreementId) {
     sample_gst_rate_bp: business.default_tax_rate_bp || 1800,
     sample_refund_minor: 100000, // ₹1,000.00
   });
+  const productIllustrations = calculateContractProductIllustrations(agreement.commission_basis_points);
+  const illustrativeCalculation = {
+    ...baseIllustrative,
+    ...productIllustrations,
+    disclaimer: baseIllustrative.disclaimer,
+    products_disclaimer: productIllustrations.disclaimer,
+  };
 
   return {
     contract_id: agreement.id,
@@ -774,6 +852,39 @@ export async function marketingDashboard(db) {
 
 /* ---------------------------------------------------- Brand Logos */
 
+export function extractImageDimensions(bytes, isPng, isJpg) {
+  if (isPng) {
+    if (bytes.length < 24) return { width: 0, height: 0 };
+    return {
+      width: bytes.readUInt32BE(16),
+      height: bytes.readUInt32BE(20),
+    };
+  }
+  if (isJpg) {
+    let offset = 2;
+    while (offset < bytes.length - 8) {
+      if (bytes[offset] !== 0xFF) {
+        offset++;
+        continue;
+      }
+      const marker = bytes[offset + 1];
+      if (marker === 0xC0 || marker === 0xC1 || marker === 0xC2) {
+        const height = bytes.readUInt16BE(offset + 5);
+        const width = bytes.readUInt16BE(offset + 7);
+        return { width, height };
+      }
+      if (marker >= 0xC0 && marker <= 0xFE && marker !== 0xD8 && marker !== 0xD9) {
+        const segLength = bytes.readUInt16BE(offset + 2);
+        offset += 2 + segLength;
+      } else {
+        offset += 2;
+      }
+    }
+    return { width: 512, height: 512 };
+  }
+  return { width: 0, height: 0 };
+}
+
 export async function saveBrandLogo(db, actor, base64, name = 'product_logo') {
   assert(['company_logo', 'product_logo'].includes(name), 400, 'Invalid logo target asset.', 'INVALID_ASSET');
 
@@ -786,18 +897,9 @@ export async function saveBrandLogo(db, actor, base64, name = 'product_logo') {
   const isJpg = bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]));
   assert(isPng || isJpg, 415, 'The logo must be a valid PNG or JPEG image.', 'INVALID_UPLOAD');
 
-  let width = 0;
-  let height = 0;
+  const { width, height } = extractImageDimensions(bytes, isPng, isJpg);
+  assert(width >= 1 && height >= 1 && width <= 2500 && height <= 2500, 400, 'The logo dimensions are out of range (must be between 1x1 and 2500x2500).', 'INVALID_UPLOAD');
   const mimeType = isPng ? 'image/png' : 'image/jpeg';
-
-  if (isPng) {
-    width = bytes.readUInt32BE(16);
-    height = bytes.readUInt32BE(20);
-  } else {
-    // For JPEG, basic dimension extraction or fallback sane dimensions
-    width = 400;
-    height = 200;
-  }
 
   const sha = hash(bytes.toString('base64'));
 
@@ -831,4 +933,31 @@ export async function brandLogoBytes(db, name = 'product_logo') {
   }
 
   return null;
+}
+
+export async function getBrandAssetsSummary(db) {
+  const prod = await brandLogoBytes(db, 'product_logo');
+  const comp = await brandLogoBytes(db, 'company_logo');
+
+  const { rows: prodRows } = await db.query(`SELECT width, height FROM inv.brand_assets WHERE name = 'product_logo'`).catch(() => ({ rows: [] }));
+  const { rows: compRows } = await db.query(`SELECT width, height FROM inv.brand_assets WHERE name = 'company_logo'`).catch(() => ({ rows: [] }));
+
+  return {
+    product_logo: prod?.bytes ? {
+      exists: true,
+      mimeType: prod.mimeType,
+      bytes: prod.bytes.length,
+      width: prodRows[0]?.width || 0,
+      height: prodRows[0]?.height || 0,
+      dataUri: `data:${prod.mimeType};base64,${Buffer.from(prod.bytes).toString('base64')}`,
+    } : { exists: false },
+    company_logo: comp?.bytes ? {
+      exists: true,
+      mimeType: comp.mimeType,
+      bytes: comp.bytes.length,
+      width: compRows[0]?.width || 0,
+      height: compRows[0]?.height || 0,
+      dataUri: `data:${comp.mimeType};base64,${Buffer.from(comp.bytes).toString('base64')}`,
+    } : { exists: false },
+  };
 }

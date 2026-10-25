@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.4] - 2026-10-25
+
+### Fixed
+- **Brand Assets & Nextora POS Product Logo Upload (Resolving HTTP 413 "Request body is too large")**:
+  - Expanded request body size limits in `server/api.js`: raised product logo endpoints (`POST /api/settings/product-logo` & `POST /api/marketing/product-logo`) limit to 2 MB (`2097152`), and corporate logo (`POST /api/settings/logo`) to 1 MB (`1048576`).
+  - Added binary JPEG SOF segment parsing and PNG IHDR chunk inspection, enforcing dimensions between $40 \times 20$ and $2500 \times 2500$ px without image distortion.
+  - Implemented `GET /api/settings/logo` returning binary image stream with correct `image/png` content-type and cache headers.
+  - Implemented `GET /api/marketing/brand-assets` returning structured metadata and Base64 data URIs for product and company brand assets.
+  - Updated Electron `serveAppAsset` in `electron/main.js` to dispatch `app://nextora/api/*` internally, preventing 404 broken image placeholders in desktop packaged builds.
+- **Contract PDF Generation & Download Workflow**:
+  - Replaced unhandled `<a href="..." target="_blank">` tags with application-standard `api.openDocument(path, { download })` bridge calling Electron `doc:open`.
+  - Wired contract preview "Generate PDF" and "Download PDF" buttons and agreement list actions to trigger native Windows save dialogs with verified file writing.
+  - Standardized contract PDF download attachment filename to `${contract_number}_Influencer_Agreement.pdf`.
+- **Section 3 Marketing Deliverables Table Alignment**:
+  - Removed obsolete `Deadline` column.
+  - Standardized column headers: `DELIVERABLE`, `MIN. QTY`, `FREQUENCY`, `REQUIRED INSTAGRAM HANDLES`.
+  - Enforced a minimum quantity of 4 Monthly for Instagram Reels.
+  - Rendered official handles `@nextora_pos, @nextora_creations`.
+- **Section 4 Shared Calculation Engine & Telangana GST Separation**:
+  - Implemented `calculateContractProductIllustrations(commissionBasisPoints)` providing verified, reproducible financial math shared identically by on-screen preview and vector PDF rendering.
+  - Displays accurate prices, net values, GST amounts, and influencer commissions for both Nextora POS products:
+    - **Nextora POS Mobile App** (₹5,999.00 GST-inclusive @ 18% GST): Net Sale Value ₹5,083.90, GST ₹915.10, Commission @ 50% ₹2,541.95, Telangana Intra-State split CGST ₹457.55 + SGST ₹457.55 = ₹915.10, Interstate IGST ₹915.10.
+    - **Nextora POS Desktop** (₹7,999.00 GST-inclusive @ 18% GST): Net Sale Value ₹6,778.81, GST ₹1,220.19, Commission @ 50% ₹3,389.41, Telangana Intra-State split CGST ₹610.10 + SGST ₹610.09 = ₹1,220.19, Interstate IGST ₹1,220.19.
+  - Included statutory non-binding illustrative disclaimer.
+- **Monthly Commission Payment Settlement Clause**:
+  - Updated contract clauses (Section 4 and Section 7) to specify that commission payments are processed during the first week of each calendar month for the preceding settlement period.
+
+### Added
+- **Software Development Services Contracts Module**:
+  - Full end-to-end management for custom software development contracts, multi-milestone payment schedules, timeline deliverables, 3-month complimentary support clauses, post-support feature pricing, and optional monthly maintenance plans.
+  - Dedicated multi-page vector PDF generation engine for software service agreements (`server/software-contract-pdf.js`).
+  - Unified contracts index in Marketing & Partnerships supporting both Software Services and Influencer Marketing agreements.
+- **Expanded Test Suite**:
+  - Expanded automated test suite to 171 tests covering 350 KB logo uploads, JPEG/PNG dimension bounds, GST intra-state/interstate calculations, deliverable headers, software services contracts, and multi-page vector PDF generation.
+
 ## [1.1.3] - 2026-10-25
 
 ### Added

@@ -569,3 +569,111 @@ export const bulkSaleStatusUpdateSchema = z.object({
   status: z.enum(['PENDING', 'VERIFIED', 'APPROVED', 'PAID', 'REVERSED', 'DISPUTED']),
   note: clean(500).default(''),
 }).strict();
+
+/* ------------------------------------------- Software Development Agreements */
+
+export const featureScopeRowSchema = z.object({
+  sno: z.union([z.number(), z.string()]).optional(),
+  name: clean(200),
+  description: multiline(1000).default(''),
+  deliverables: multiline(1000).default(''),
+  priority: z.enum(['Low', 'Normal', 'High', 'Critical']).default('Normal'),
+  acceptance_criteria: multiline(1000).default(''),
+  included: z.boolean().default(true),
+  notes: multiline(1000).default(''),
+});
+
+export const paymentMilestoneSchema = z.object({
+  name: clean(200),
+  trigger: clean(500).default(''),
+  due_date: z.union([day, z.literal(''), z.null()]).default(''),
+  amount_minor: minorUnits.default(0),
+  percentage: z.number().optional(),
+});
+
+export const softwareAgreementCreateSchema = z.object({
+  client_id: z.union([uuid, z.null()]).optional(),
+  client_name: required(200),
+  client_legal_name: clean(200).default(''),
+  contact_person: clean(200).default(''),
+  client_email: z.union([email, z.literal('')]).default(''),
+  client_phone: clean(50).default(''),
+  billing_address: multiline(1000).default(''),
+  city: clean(100).default(''),
+  state_code: clean(10).default('36'),
+  postal_code: clean(20).default(''),
+  country: clean(100).default('India'),
+  client_gstin: z.union([gstin, z.literal('')]).default(''),
+  client_pan: clean(20).default(''),
+  client_business_type: clean(100).default(''),
+  signatory_name: clean(120).default(''),
+  signatory_designation: clean(120).default(''),
+
+  title: clean(200).default('Software Development Services Agreement'),
+  service_category: clean(100).default('Custom software development'),
+  service_category_custom: clean(100).default(''),
+  service_description: multiline(4000).default(''),
+  business_objectives: multiline(4000).default(''),
+  start_date: day,
+  estimated_completion_date: z.union([day, z.null()]).default(null),
+  development_duration: clean(100).default('1 Month'),
+  requirements_finalization_date: z.union([day, z.null()]).default(null),
+  deployment_target: clean(200).default(''),
+  hosting_responsibility: clean(200).default(''),
+  client_assets_access: multiline(2000).default(''),
+  third_party_integrations: multiline(2000).default(''),
+  acceptance_criteria: multiline(4000).default(''),
+  project_notes: multiline(4000).default(''),
+
+  features: z.array(featureScopeRowSchema).default([]),
+  included_services: multiline(2000).default(''),
+  excluded_services: multiline(2000).default(''),
+  client_responsibilities: multiline(2000).default(''),
+  third_party_dependencies: multiline(2000).default(''),
+  technical_assumptions: multiline(2000).default(''),
+  scope_limitations: multiline(2000).default(''),
+
+  pricing_mode: taxMode.default('EXCLUSIVE'),
+  base_price_minor: minorUnits.default(0),
+  gst_rate_bp: basisPoints.default(1800),
+  gst_treatment: z.enum(TAX_TREATMENTS).default('TAXABLE'),
+  discount_minor: minorUnits.default(0),
+  additional_charges_minor: minorUnits.default(0),
+  advance_percentage_bp: basisPoints.default(1000),
+  payment_milestones: z.array(paymentMilestoneSchema).default([]),
+  payment_terms_notes: multiline(2000).default(''),
+
+  timeline_milestones: z.array(z.record(z.any())).default([]),
+
+  free_support_months: z.number().int().min(0).max(60).default(3),
+  support_start_date: z.union([day, z.null()]).default(null),
+  support_end_date: z.union([day, z.null()]).default(null),
+  support_scope: multiline(2000).default(''),
+  support_reporting_process: multiline(2000).default(''),
+  post_support_feature_rate_minor: minorUnits.default(500000),
+  post_support_terms: multiline(2000).default(''),
+
+  maintenance_included: z.boolean().default(false),
+  maintenance_rate_minor: minorUnits.default(200000),
+  maintenance_start_date: z.union([day, z.null()]).default(null),
+  maintenance_frequency: clean(50).default('MONTHLY'),
+  maintenance_scope: multiline(2000).default(''),
+  maintenance_exclusions: multiline(2000).default(''),
+
+  custom_clauses: z.record(z.string(), z.string()).default({}),
+  special_terms: multiline(4000).default(''),
+  nextora_signatory_name: clean(120).default(''),
+  nextora_signatory_title: clean(120).default(''),
+  client_signatory_name: clean(120).default(''),
+  client_signatory_title: clean(120).default(''),
+}).strict();
+
+export const softwareAgreementUpdateSchema = softwareAgreementCreateSchema.partial();
+
+export const softwareAgreementStatusActionSchema = z.object({
+  action: z.enum(['SUBMIT_APPROVAL', 'APPROVE', 'REJECT', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE', 'COMPLETE', 'TERMINATE', 'CANCEL']),
+  reason: clean(500).default(''),
+  note: clean(500).default(''),
+  date: z.union([day, z.literal('')]).default(''),
+}).strict();
+

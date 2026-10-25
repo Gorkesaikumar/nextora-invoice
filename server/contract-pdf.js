@@ -336,21 +336,21 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     page.drawRectangle({
       x: MARGIN, y: y - rowH, width: CONTENT_WIDTH, height: rowH, color: TABLE_HEADER_BG,
     });
-    page.drawText('DELIVERABLE TYPE', { x: MARGIN + 6, y: y - 11, size: 7, font: bold, color: INK });
-    page.drawText('QTY', { x: MARGIN + 140, y: y - 11, size: 7, font: bold, color: INK });
-    page.drawText('FREQUENCY', { x: MARGIN + 180, y: y - 11, size: 7, font: bold, color: INK });
-    page.drawText('DEADLINE / SCHEDULE', { x: MARGIN + 260, y: y - 11, size: 7, font: bold, color: INK });
-    page.drawText('REQUIRED TAGS / CTA / METRICS', { x: MARGIN + 370, y: y - 11, size: 7, font: bold, color: INK });
+    page.drawText('DELIVERABLE', { x: MARGIN + 6, y: y - 11, size: 7, font: bold, color: INK });
+    page.drawText('MIN. QTY', { x: MARGIN + 160, y: y - 11, size: 7, font: bold, color: INK });
+    page.drawText('FREQUENCY', { x: MARGIN + 230, y: y - 11, size: 7, font: bold, color: INK });
+    page.drawText('REQUIRED INSTAGRAM HANDLES', { x: MARGIN + 320, y: y - 11, size: 7, font: bold, color: INK });
     y -= rowH;
 
     for (const d of deliverables) {
-      const details = [
-        d.required_tags ? `Tags: ${d.required_tags}` : '',
-        d.approval_requirements ? `Approval: ${d.approval_requirements}` : '',
-        d.performance_metrics ? `Metrics: ${d.performance_metrics}` : '',
-      ].filter(Boolean).join(' | ');
+      const isReel = String(d.type || '').toLowerCase().includes('reel');
+      const isDemo = String(d.type || '').toLowerCase().includes('demonstration');
+      const qty = isReel ? Math.max(4, Number(d.quantity || 4)) : (d.quantity || 1);
+      const handles = (isReel || isDemo)
+        ? '@nextora_pos, @nextora_creations'
+        : (d.required_tags || '@nextora_pos, @nextora_creations');
 
-      const lines = wrapText(font, details || 'As agreed', 7, 140);
+      const lines = wrapText(font, handles, 7, 185);
       const rowHeight = Math.max(18, lines.length * 9 + 8);
       ensureSpace(rowHeight + 4);
 
@@ -360,13 +360,12 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
       });
 
       page.drawText(d.type || 'Deliverable', { x: MARGIN + 6, y: y - 12, size: 7.5, font: bold, color: INK });
-      page.drawText(String(d.quantity || 1), { x: MARGIN + 140, y: y - 12, size: 7.5, font, color: INK });
-      page.drawText(d.frequency || 'Monthly', { x: MARGIN + 180, y: y - 12, size: 7.5, font, color: INK });
-      page.drawText(d.deadline || 'Standard campaign timeline', { x: MARGIN + 260, y: y - 12, size: 7, font, color: MUTED });
+      page.drawText(String(qty), { x: MARGIN + 160, y: y - 12, size: 7.5, font, color: INK });
+      page.drawText(d.frequency || 'Monthly', { x: MARGIN + 230, y: y - 12, size: 7.5, font, color: INK });
 
       let textY = y - 11;
       for (const line of lines) {
-        page.drawText(line, { x: MARGIN + 370, y: textY, size: 7, font, color: INK });
+        page.drawText(line, { x: MARGIN + 320, y: textY, size: 7, font, color: INK });
         textY -= 9;
       }
       y -= rowHeight;
@@ -379,50 +378,99 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   drawSectionHeading(4, 'Revenue-Sharing Terms & Calculation Basis');
   y = drawText(snapshot.clauses.section_4_revenue_terms, MARGIN, y, 8, false, INK);
 
-  // Illustrative Calculation Table
+  // Illustrative Calculation Table (Two Nextora POS Products)
   const calc = snapshot.illustrative_calculation;
   if (calc) {
-    ensureSpace(115);
+    const products = calc.products || [
+      {
+        name: 'Nextora POS Mobile App',
+        gross_sale_minor: 599900,
+        gst_rate_percent: '18%',
+        gst_amount_minor: 91510,
+        net_sale_minor: 508390,
+        commission_rate_percent: `${calc.commission_percentage || '50.00'}%`,
+        commission_minor: 254195,
+      },
+      {
+        name: 'Nextora POS Desktop',
+        gross_sale_minor: 799900,
+        gst_rate_percent: '18%',
+        gst_amount_minor: 122019,
+        net_sale_minor: 677881,
+        commission_rate_percent: `${calc.commission_percentage || '50.00'}%`,
+        commission_minor: 338941,
+      },
+    ];
+
+    ensureSpace(160);
     y -= 4;
-    page.drawText('ILLUSTRATIVE COMMISSION CALCULATION EXAMPLE', {
+    page.drawText('ILLUSTRATIVE CALCULATION EXAMPLE (NON-BINDING)', {
       x: MARGIN, y: y - 10, size: 8, font: bold, color: INK,
     });
     y -= 14;
 
-    const calcH = 82;
+    // Table Header
+    const rowH = 16;
     page.drawRectangle({
-      x: MARGIN, y: y - calcH, width: CONTENT_WIDTH, height: calcH,
+      x: MARGIN, y: y - rowH, width: CONTENT_WIDTH, height: rowH, color: TABLE_HEADER_BG,
+    });
+    page.drawText('PRODUCT', { x: MARGIN + 6, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('PRICE (INCL. GST)', { x: MARGIN + 135, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('GST RATE', { x: MARGIN + 215, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('GST AMOUNT', { x: MARGIN + 265, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('NET VALUE (EX. GST)', { x: MARGIN + 330, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('COMM. %', { x: MARGIN + 415, y: y - 11, size: 6.5, font: bold, color: INK });
+    page.drawText('INFLUENCER COMM.', { x: MARGIN + 455, y: y - 11, size: 6.5, font: bold, color: INK });
+    y -= rowH;
+
+    for (const p of products) {
+      ensureSpace(18);
+      page.drawRectangle({
+        x: MARGIN, y: y - 16, width: CONTENT_WIDTH, height: 16,
+        borderWidth: 0.5, borderColor: LINE, color: rgb(1, 1, 1),
+      });
+      page.drawText(p.name, { x: MARGIN + 6, y: y - 11, size: 7, font: bold, color: INK });
+      page.drawText(`₹${(p.gross_sale_minor / 100).toFixed(2)}`, { x: MARGIN + 135, y: y - 11, size: 7, font, color: INK });
+      page.drawText(p.gst_rate_percent, { x: MARGIN + 215, y: y - 11, size: 7, font, color: MUTED });
+      page.drawText(`₹${(p.gst_amount_minor / 100).toFixed(2)}`, { x: MARGIN + 265, y: y - 11, size: 7, font, color: MUTED });
+      page.drawText(`₹${(p.net_sale_minor / 100).toFixed(2)}`, { x: MARGIN + 330, y: y - 11, size: 7, font, color: INK });
+      page.drawText(p.commission_rate_percent, { x: MARGIN + 415, y: y - 11, size: 7, font, color: INK });
+      page.drawText(`₹${(p.commission_minor / 100).toFixed(2)}`, { x: MARGIN + 455, y: y - 11, size: 7, font: bold, color: accent });
+      y -= 16;
+    }
+
+    // GST Breakdown Box (Intra-State vs Interstate)
+    ensureSpace(68);
+    const boxH = 56;
+    page.drawRectangle({
+      x: MARGIN, y: y - boxH - 4, width: CONTENT_WIDTH, height: boxH,
       borderWidth: 0.5, borderColor: LINE, color: SOFT_BG,
     });
-
-    const cW = CONTENT_WIDTH / 3;
-    page.drawText(`Hypothetical Sale Amount: ₹${(calc.sample_sale_minor / 100).toFixed(2)}`, { x: MARGIN + 8, y: y - 14, size: 7.5, font: bold, color: INK });
-    page.drawText(`Product Tax Mode: GST ${snapshot.commercial_terms.product_tax_mode}`, { x: MARGIN + 8, y: y - 26, size: 7, font, color: MUTED });
-    page.drawText(`GST on Product Sale: ₹${(calc.gst_collected_minor / 100).toFixed(2)}`, { x: MARGIN + 8, y: y - 38, size: 7, font, color: MUTED });
-    page.drawText(`Gross Customer Payment: ₹${(calc.gross_customer_payment_minor / 100).toFixed(2)}`, { x: MARGIN + 8, y: y - 50, size: 7, font, color: MUTED });
-
-    page.drawText(`Commission Base: ₹${(calc.commission_base_minor / 100).toFixed(2)}`, { x: MARGIN + cW + 8, y: y - 14, size: 7.5, font: bold, color: INK });
-    page.drawText(`Agreed Commission Rate: ${calc.commission_percentage}%`, { x: MARGIN + cW + 8, y: y - 26, size: 7, font, color: MUTED });
-    page.drawText(`Gross Commission Earned: ₹${(calc.gross_commission_minor / 100).toFixed(2)}`, { x: MARGIN + cW + 8, y: y - 38, size: 7, font: bold, color: INK });
-    page.drawText(`Commission Tax Terms: GST ${snapshot.commercial_terms.commission_tax_terms}`, { x: MARGIN + cW + 8, y: y - 50, size: 7, font, color: MUTED });
-
-    page.drawText(`TDS Withholding Rate: ${(calc.withholding_tax_rate_bp / 100).toFixed(2)}% (${snapshot.commercial_terms.withholding_section})`, {
-      x: MARGIN + cW * 2 + 8, y: y - 14, size: 7.5, font: bold, color: INK,
+    page.drawText('GST TREATMENT & CLASSIFICATION BREAKDOWN', {
+      x: MARGIN + 6, y: y - 14, size: 6.5, font: bold, color: INK,
     });
-    page.drawText(`Less Statutory TDS: -₹${(calc.withholding_minor / 100).toFixed(2)}`, { x: MARGIN + cW * 2 + 8, y: y - 26, size: 7, font, color: rgb(0.8, 0.2, 0.2) });
-    page.drawText(`Net Payout to Influencer: ₹${(calc.net_commission_payable_minor / 100).toFixed(2)}`, {
-      x: MARGIN + cW * 2 + 8, y: y - 40, size: 8.5, font: bold, color: accent,
+    page.drawText('Eligible Telangana Intra-State Supplies (CGST 9% + SGST 9%):', {
+      x: MARGIN + 6, y: y - 25, size: 6, font: bold, color: INK,
     });
-    page.drawText(`Min Payout Threshold: ₹${((snapshot.minimum_payout_minor || 100000) / 100).toFixed(2)}`, {
-      x: MARGIN + cW * 2 + 8, y: y - 52, size: 7, font, color: MUTED,
+    page.drawText('• Mobile App: CGST ₹457.55 + SGST ₹457.55 = Total GST ₹915.10   |   • Desktop: CGST ₹610.10 + SGST ₹610.09 = Total GST ₹1,220.19', {
+      x: MARGIN + 12, y: y - 34, size: 5.8, font, color: MUTED,
     });
+    page.drawText('Eligible Interstate Supplies (IGST 18%):', {
+      x: MARGIN + 6, y: y - 44, size: 6, font: bold, color: INK,
+    });
+    page.drawText('• Mobile App: IGST ₹915.10 (18%)   |   • Desktop: IGST ₹1,220.19 (18%)   — Commission calculated on Net Sale Value excluding GST.', {
+      x: MARGIN + 12, y: y - 53, size: 5.8, font, color: MUTED,
+    });
+    y -= boxH + 8;
 
-    // Disclaimer line
-    page.drawText(calc.disclaimer, {
-      x: MARGIN + 8, y: y - 72, size: 5.8, font, color: MUTED,
-    });
-
-    y -= calcH + 12;
+    // Disclaimer
+    const discLines = wrapText(font, calc.disclaimer || 'Illustrative calculation based on the listed retail prices and the stated GST rate. Actual commission is calculated on verified eligible sales under this agreement, subject to applicable cancellations, refunds, chargebacks, and other agreed adjustments.', 5.5, CONTENT_WIDTH - 8);
+    ensureSpace(discLines.length * 7 + 4);
+    for (const dLine of discLines) {
+      page.drawText(dLine, { x: MARGIN + 4, y: y - 6, size: 5.5, font, color: MUTED });
+      y -= 7;
+    }
+    y -= 8;
   }
 
   // --- SECTION 5: MARKETING OBLIGATIONS & CONDUCT ---

@@ -10,6 +10,7 @@ import {
   cleanupPreviewSchema, cleanupExportSchema, cleanupExecuteSchema,
   influencerSchema, agreementDraftSchema, agreementUpdateSchema, agreementStatusActionSchema,
   salesImportApplySchema, saleStatusUpdateSchema, bulkSaleStatusUpdateSchema,
+  softwareAgreementCreateSchema, softwareAgreementUpdateSchema, softwareAgreementStatusActionSchema,
 } from './domain.js';
 import { authenticate, checkPassword, hashPassword, hash, token, sessionCookie, rateLimit,
   canWrite, canManageSettings } from './auth.js';
@@ -59,9 +60,15 @@ import {
   listInfluencers, getInfluencer, createInfluencer, updateInfluencer, checkInfluencerDuplicates,
   listAgreements, getAgreement, createAgreement, updateAgreementDraft, transitionAgreementStatus,
   duplicateAgreement, buildContractSnapshot, recordPdfGenerated, marketingDashboard,
-  saveBrandLogo, brandLogoBytes,
+  saveBrandLogo, brandLogoBytes, getBrandAssetsSummary,
 } from './marketing.js';
 import { renderContractPdf } from './contract-pdf.js';
+import {
+  listSoftwareAgreements, getSoftwareAgreement, createSoftwareAgreement, updateSoftwareAgreementDraft,
+  transitionSoftwareAgreementStatus, duplicateSoftwareAgreement, buildSoftwareContractSnapshot,
+  recordSoftwarePdfGenerated, calculateSoftwareContractFinancials, DEFAULT_SERVICE_CATEGORIES,
+} from './software-contracts.js';
+import { renderSoftwareContractPdf } from './software-contract-pdf.js';
 import {
   generateSalesTemplate, parseAndValidateSalesFile, confirmSalesImport, listSalesBatches,
   getSalesDashboardMetrics, listSalesRecords, updateSaleRecordStatus, bulkUpdateSalesStatus,
@@ -412,13 +419,16 @@ export function createAPI(db, config) {
             invoice: previewNumber(business.invoice_prefix, new Date()),
             receipt: previewNumber(business.receipt_prefix, new Date()),
             influencer_agreement: previewNumber(business.influencer_contract_prefix || 'NC/INF', new Date()),
+            software_agreement: previewNumber(business.software_contract_prefix || 'NC/SDA', new Date()),
           },
+          software_service_categories: DEFAULT_SERVICE_CATEGORIES,
           business: { business_name: business.business_name, state_code: business.state_code,
             gstin: business.gstin, default_payment_terms_days: business.default_payment_terms_days,
             default_quotation_validity_days: business.default_quotation_validity_days,
             default_tax_rate_bp: business.default_tax_rate_bp, rounding_mode: business.rounding_mode,
             product_price_tax_mode: business.product_price_tax_mode || 'EXCLUSIVE',
             influencer_contract_prefix: business.influencer_contract_prefix || 'NC/INF',
+            software_contract_prefix: business.software_contract_prefix || 'NC/SDA',
             terms: business.terms, quotation_terms: business.quotation_terms },
         });
       }
@@ -430,12 +440,20 @@ export function createAPI(db, config) {
         return json({ settings: await updateSettings(db, actor, await body(request, settingsSchema)) });
       }
       if (path === '/api/settings/logo' && method === 'POST') {
-        const input = await body(request, z.object({ png: z.string().min(24).max(900000) }).strict());
+        const input = await body(request, z.object({ png: z.string().min(24).max(900000) }).strict(), 1048576);
         return json({ logo: await saveLogo(db, actor, input.png) });
+      }
+      if (path === '/api/settings/logo' && method === 'GET') {
+        const asset = await brandLogoBytes(db, 'company_logo');
+        if (!asset?.bytes) return new Response('Not found', { status: 404 });
+        return new Response(asset.bytes, {
+          status: 200,
+          headers: { ...baseHeaders, 'Content-Type': asset.mimeType, 'Cache-Control': 'no-cache' }
+        });
       }
       if ((path === '/api/settings/product-logo' || path === '/api/marketing/product-logo') && method === 'POST') {
         requireManager(actor);
-        const input = await body(request, z.object({ logo: z.string().min(24).max(1800000) }).strict());
+        const input = await body(request, z.object({ logo: z.string().min(24).max(1800000) }).strict(), 2097152);
         return json({ logo: await saveBrandLogo(db, actor, input.logo, 'product_logo') });
       }
       if ((path === '/api/settings/product-logo' || path === '/api/marketing/product-logo') && method === 'GET') {
@@ -445,6 +463,9 @@ export function createAPI(db, config) {
           status: 200,
           headers: { ...baseHeaders, 'Content-Type': asset.mimeType, 'Cache-Control': 'no-cache' }
         });
+      }
+      if (path === '/api/marketing/brand-assets' && method === 'GET') {
+        return json(await getBrandAssetsSummary(db));
       }
       if (path === '/api/backup/status' && method === 'GET') {
         requireManager(actor);
@@ -1242,7 +1263,154 @@ export function createAPI(db, config) {
             headers: {
               ...baseHeaders,
               'Content-Type': 'application/pdf',
-              'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="${safeContractNum}.pdf"`,
+              'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="${safeContractNum}_Influencer_Agreement.pdf"`,
+            },
+          });
+        }
+      }
+
+      /* ------------------------------------------- unified contracts list */
+      if (path === '/api/marketing/contracts' && method === 'GET') {
+        requireManager(actor);
+        const search = url.searchParams.get('search') || '';
+        const status = url.searchParams.get('status') || '';
+        const type = url.searchParams.get('contract_type') || '';
+        const page = Number(url.searchParams.get('page') || 1);
+        const limit = Number(url.searchParams.get('limit') || 25);
+
+        let infAgreements = [];
+        let swAgreements = [];
+
+        if (!type || type === 'INFLUENCER') {
+          const infRes = await listAgreements(db, { search, status, page: 1, limit: 1000 });
+          infAgreements = (infRes.agreements || []).map(a => ({
+            ...a,
+            contract_type: 'INFLUENCER',
+            contract_type_label: 'Influencer Marketing Agreement',
+            counterparty_name: a.influencer_legal_name || a.influencer_display_name,
+            secondary_info: `@${a.influencer_instagram_username || ''}`,
+            commercial_summary: `${(a.commission_basis_points / 100).toFixed(2)}% Rev Share`,
+          }));
+        }
+
+        if (!type || type === 'SOFTWARE_SERVICES') {
+          const swRes = await listSoftwareAgreements(db, { search, status, page: 1, limit: 1000 });
+          swAgreements = (swRes.agreements || []).map(a => ({
+            ...a,
+            contract_type: 'SOFTWARE_SERVICES',
+            contract_type_label: 'Software Development Services Agreement',
+            counterparty_name: a.client_name,
+            secondary_info: a.service_category,
+            commercial_summary: `₹${((a.final_amount_minor || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          }));
+        }
+
+        const combined = [...infAgreements, ...swAgreements].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const total = combined.length;
+        const offset = (page - 1) * limit;
+        const pageRows = combined.slice(offset, offset + limit);
+
+        return json({ contracts: pageRows, total, page, limit });
+      }
+
+      /* ------------------------------------------- software development agreements */
+      if (path === '/api/marketing/software-agreements' && method === 'GET') {
+        requireManager(actor);
+        return json(await listSoftwareAgreements(db, {
+          clientId: url.searchParams.get('client_id') || null,
+          status: url.searchParams.get('status') || '',
+          search: url.searchParams.get('search') || '',
+          page: url.searchParams.get('page') || 1,
+          limit: url.searchParams.get('limit') || 25,
+        }));
+      }
+
+      if (path === '/api/marketing/software-agreements' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, softwareAgreementCreateSchema);
+        return json({ agreement: await createSoftwareAgreement(db, actor, input) }, 201);
+      }
+
+      if (path === '/api/marketing/software-agreements/calculate' && method === 'POST') {
+        requireManager(actor);
+        const input = await body(request, z.object({
+          base_price_minor: z.number().default(0),
+          pricing_mode: z.enum(['EXCLUSIVE', 'INCLUSIVE']).default('EXCLUSIVE'),
+          gst_rate_bp: z.number().default(1800),
+          gst_treatment: z.string().default('TAXABLE'),
+          discount_minor: z.number().default(0),
+          additional_charges_minor: z.number().default(0),
+          client_state_code: z.string().default('36'),
+          advance_percentage_bp: z.number().default(1000),
+          payment_milestones: z.array(z.any()).default([]),
+        }));
+        const { rows: settingsRows } = await db.query('SELECT * FROM inv.business_settings WHERE id = true');
+        const business = settingsRows[0] || {};
+        return json({
+          financials: calculateSoftwareContractFinancials({
+            ...input,
+            supplier_state_code: business.state_code || '36',
+          }),
+        });
+      }
+
+      const swAgreementMatch = path.match(/^\/api\/marketing\/software-agreements\/([0-9a-fA-F-]+)(?:\/([a-z-]+))?$/);
+      if (swAgreementMatch) {
+        requireManager(actor);
+        const id = uuid.parse(swAgreementMatch[1]);
+        const action = swAgreementMatch[2];
+
+        if (!action && method === 'GET') {
+          return json({ agreement: await getSoftwareAgreement(db, id) });
+        }
+        if (!action && method === 'PATCH') {
+          const input = await body(request, softwareAgreementUpdateSchema);
+          return json({ agreement: await updateSoftwareAgreementDraft(db, actor, id, input) });
+        }
+        if (action === 'status' && method === 'POST') {
+          const input = await body(request, softwareAgreementStatusActionSchema);
+          return json({ agreement: await transitionSoftwareAgreementStatus(db, actor, id, input) });
+        }
+        if (action === 'duplicate' && method === 'POST') {
+          return json({ agreement: await duplicateSoftwareAgreement(db, actor, id) }, 201);
+        }
+        if (action === 'preview' && method === 'GET') {
+          return json({ snapshot: await buildSoftwareContractSnapshot(db, id) });
+        }
+        if (action === 'generate-pdf' && method === 'POST') {
+          const snapshot = await buildSoftwareContractSnapshot(db, id);
+          await recordSoftwarePdfGenerated(db, actor, id, snapshot);
+          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
+          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo });
+          return json({
+            success: true,
+            contract_number: snapshot.contract_number,
+            pdf_generated_at: snapshot.pdf_generated_at,
+            bytes_length: bytes.length,
+          });
+        }
+        if (action === 'pdf' && method === 'GET') {
+          const agreement = await getSoftwareAgreement(db, id);
+          const snapshot = agreement.snapshot
+            ? (typeof agreement.snapshot === 'string' ? JSON.parse(agreement.snapshot) : agreement.snapshot)
+            : await buildSoftwareContractSnapshot(db, id);
+
+          const companyLogo = await brandLogoBytes(db, 'company_logo').catch(() => null);
+          const bytes = await renderSoftwareContractPdf(snapshot, { companyLogo });
+          const safeContractNum = (agreement.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+          const isView = url.searchParams.get('view') === 'true';
+
+          await audit(db, 'SOFTWARE_AGREEMENT_PDF_DOWNLOADED', {
+            actorId: actor.id, entityType: 'SOFTWARE_AGREEMENT', entityId: id,
+            metadata: { contract_number: agreement.contract_number, is_view: isView }
+          });
+
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              ...baseHeaders,
+              'Content-Type': 'application/pdf',
+              'Content-Disposition': `${isView ? 'inline' : 'attachment'}; filename="${safeContractNum}_Software_Development_Agreement.pdf"`,
             },
           });
         }

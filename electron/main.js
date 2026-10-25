@@ -102,6 +102,10 @@ protocol.registerSchemesAsPrivileged([{
  * Content-Security-Policy below is actually enforced.
  */
 async function serveAppAsset(request) {
+  const parsed = new URL(request.url);
+  if (parsed.pathname.startsWith('/api/')) {
+    return await dispatchApi({ method: request.method, path: parsed.pathname + parsed.search });
+  }
   const distDir = join(__dirname, '..', 'dist');
   const pathname = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, '');
   const target = normalize(join(distDir, pathname || 'index.html'));

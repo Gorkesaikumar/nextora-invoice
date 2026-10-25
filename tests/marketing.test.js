@@ -363,3 +363,166 @@ test('Security & permissions: Non-administrators cannot access marketing module'
   const dashAccess = await staffClient.json('GET', '/api/marketing/dashboard');
   assert.equal(dashAccess.status, 403);
 });
+
+test('Comprehensive: 350KB logo upload, brand assets endpoint, Section 3 & 4 calculations, and PDF download', async () => {
+  const client = await withAdmin(7);
+  const zlib = await import('node:zlib');
+
+  // 1. Build a real 512x512 PNG that is ~380 KB
+  const width = 512, height = 512;
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y++) {
+    raw[y * (1 + width * 3)] = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = y * (1 + width * 3) + 1 + x * 3;
+      raw[idx] = (x ^ y) & 0xff;
+      raw[idx + 1] = ((x * 3) ^ (y * 5)) & 0xff;
+      raw[idx + 2] = ((x * 7) ^ y) & 0xff;
+    }
+  }
+  const idat = zlib.deflateSync(raw, { level: 4 });
+  const crcTable = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c;
+  }
+  function crc32(buf) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function chunk(type, data) {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const t = Buffer.from(type, 'ascii');
+    const c = Buffer.alloc(4); c.writeUInt32BE(crc32(Buffer.concat([t, data])));
+    return Buffer.concat([len, t, data, c]);
+  }
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  const png350k = Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
+  assert.ok(png350k.length > 300000, 'PNG is > 300 KB');
+
+  const pngDataUri = `data:image/png;base64,${png350k.toString('base64')}`;
+
+  // 2. Upload 350 KB product logo - must succeed (previously failed with 413 "Request body is too large")
+  const uploadRes = client.ok(await client.json('POST', '/api/marketing/product-logo', {
+    logo: pngDataUri,
+  }));
+  assert.equal(uploadRes.logo.name, 'product_logo');
+  assert.equal(uploadRes.logo.mime_type, 'image/png');
+  assert.equal(uploadRes.logo.width, 512);
+  assert.equal(uploadRes.logo.height, 512);
+
+  // 3. Upload corporate logo to /api/settings/logo and test GET /api/settings/logo
+  const compLogoUpload = client.ok(await client.json('POST', '/api/settings/logo', {
+    png: pngDataUri,
+  }));
+  assert.ok(compLogoUpload);
+
+  const compLogoGet = await client.binary('GET', '/api/settings/logo');
+  assert.equal(compLogoGet.status, 200);
+  assert.equal(compLogoGet.headers.get('content-type'), 'image/png');
+  assert.ok(compLogoGet.bytes.length > 300000);
+
+  // 4. Test GET /api/marketing/brand-assets
+  const brandAssets = client.ok(await client.json('GET', '/api/marketing/brand-assets'));
+  assert.equal(brandAssets.product_logo.exists, true);
+  assert.equal(brandAssets.product_logo.width, 512);
+  assert.equal(brandAssets.company_logo.exists, true);
+  assert.ok(brandAssets.product_logo.dataUri.startsWith('data:image/png;base64,'));
+  assert.ok(brandAssets.company_logo.dataUri.startsWith('data:image/png;base64,'));
+
+  // 5. Test Section 4 calculation function
+  const { calculateContractProductIllustrations } = await import('../server/marketing.js');
+  const calc = calculateContractProductIllustrations(5000); // 50%
+  assert.equal(calc.commission_percentage, '50.00');
+  assert.equal(calc.products.length, 2);
+
+  const mobile = calc.products[0];
+  assert.equal(mobile.name, 'Nextora POS Mobile App');
+  assert.equal(mobile.gross_sale_minor, 599900); // ₹5,999.00
+  assert.equal(mobile.net_sale_minor, 508390); // ₹5,083.90
+  assert.equal(mobile.gst_amount_minor, 91510); // ₹915.10
+  assert.equal(mobile.commission_minor, 254195); // ₹2,541.95
+  assert.equal(mobile.intra_state_telangana.cgst_minor, 45755); // ₹457.55
+  assert.equal(mobile.intra_state_telangana.sgst_minor, 45755); // ₹457.55
+  assert.equal(mobile.interstate.igst_minor, 91510); // ₹915.10
+
+  const desktop = calc.products[1];
+  assert.equal(desktop.name, 'Nextora POS Desktop');
+  assert.equal(desktop.gross_sale_minor, 799900); // ₹7,999.00
+  assert.equal(desktop.net_sale_minor, 677881); // ₹6,778.81
+  assert.equal(desktop.gst_amount_minor, 122019); // ₹1,220.19
+  assert.equal(desktop.commission_minor, 338941); // ₹3,389.41
+  assert.equal(desktop.intra_state_telangana.cgst_minor, 61010); // ₹610.10
+  assert.equal(desktop.intra_state_telangana.sgst_minor, 61009); // ₹610.09
+  assert.equal(desktop.interstate.igst_minor, 122019); // ₹1,220.19
+
+  // 6. Create influencer and agreement with default deliverables
+  const inf = client.ok(await client.json('POST', '/api/marketing/influencers', sampleInfluencer({
+    legal_name: 'Sneha Reddy',
+    display_name: 'Sneha Food Tech',
+    instagram_username: '@snehafoodtech',
+    email: 'sneha@example.com',
+  }))).influencer;
+
+  const agr = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(inf.id, {
+    commission_basis_points: 5000,
+    deliverables: [
+      {
+        type: 'Instagram Reels',
+        quantity: 4,
+        frequency: 'Monthly',
+        required_tags: '@nextora_pos, @nextora_creations',
+        approval_requirements: 'Script & draft preview 48h prior to posting',
+        performance_metrics: 'Insights screenshot within 7 days',
+      },
+      {
+        type: 'Product Demonstration',
+        quantity: 1,
+        frequency: 'Quarterly',
+        required_tags: '@nextora_pos, @nextora_creations',
+        approval_requirements: 'Live demo outline approval',
+        performance_metrics: 'Lead referral link clicks',
+      }
+    ],
+  }))).agreement;
+
+  // 7. Check preview clauses & snapshot
+  const preview = client.ok(await client.json('GET', `/api/marketing/agreements/${agr.id}/preview`));
+  assert.ok(preview.snapshot.clauses.section_4_revenue_terms.includes('first week of each calendar month'));
+  assert.ok(preview.snapshot.clauses.section_7_payment_invoicing.includes('first week of each calendar month'));
+  assert.equal(preview.snapshot.illustrative_calculation.products.length, 2);
+
+  // 8. Generate and download PDF
+  const genPdf = client.ok(await client.json('POST', `/api/marketing/agreements/${agr.id}/generate-pdf`));
+  assert.equal(genPdf.success, true);
+
+  const pdfDownload = await client.binary('GET', `/api/marketing/agreements/${agr.id}/pdf`);
+  assert.equal(pdfDownload.status, 200);
+  assert.equal(pdfDownload.headers.get('content-type'), 'application/pdf');
+  const disposition = pdfDownload.headers.get('content-disposition');
+  const safeNum = (agr.contract_number || 'contract').replace(/[^A-Za-z0-9_-]/g, '_');
+  assert.ok(disposition.includes(`${safeNum}_Influencer_Agreement.pdf`));
+  assert.equal(pdfDownload.bytes.subarray(0, 5).toString(), '%PDF-');
+
+  // Verify extracted text in PDF
+  const pages = extractPdf(pdfDownload.bytes);
+  const pdfText = pages.map(p => p.text.join('\n')).join('\n');
+  assert.ok(pdfText.includes('DELIVERABLE'));
+  assert.ok(pdfText.includes('MIN. QTY'));
+  assert.ok(pdfText.includes('FREQUENCY'));
+  assert.ok(pdfText.includes('REQUIRED INSTAGRAM HANDLES'));
+  assert.ok(pdfText.includes('@nextora_pos, @nextora_creations'));
+  assert.ok(!pdfText.includes('DEADLINE'));
+  assert.ok(pdfText.includes('Nextora POS Mobile App'));
+  assert.ok(pdfText.includes('Nextora POS Desktop'));
+  assert.ok(pdfText.includes('₹5,999.00') || pdfText.includes('5999.00'));
+  assert.ok(pdfText.includes('₹7,999.00') || pdfText.includes('7999.00'));
+  assert.ok(pdfText.includes('Telangana Intra-State'));
+  assert.ok(pdfText.includes('Interstate Supplies'));
+});
