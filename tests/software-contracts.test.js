@@ -491,6 +491,7 @@ test('9. Unified Contracts Endpoint: Returns both software and influencer agreem
     legal_name: 'Sneha Patel',
     display_name: 'Sneha Retail',
     instagram_username: '@sneharetail',
+    phone: '+91 98765 43210',
     email: 'sneha@example.test',
   })).influencer;
 

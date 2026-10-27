@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { assert, HttpError, uuid, basisPoints, minorUnits } from './domain.js';
+import { assert, HttpError, uuid, basisPoints, minorUnits, isValidMobilePhone } from './domain.js';
 import { hash } from './auth.js';
 import { audit } from './audit.js';
 import { allocateNumber, previewNumber } from './numbering.js';
@@ -8,6 +8,54 @@ import { formatMinor } from './words.js';
 import { requireWriter } from './service.js';
 
 /* -------------------------------------------------------- Default Clauses */
+
+export const MANDATORY_CONTACT_TRACKING_HEADING = 'IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER & CUSTOMER TRACKING';
+
+export const MANDATORY_CONTACT_TRACKING_PARAGRAPHS = [
+  {
+    prefix: 'Mandatory Requirement: ',
+    text: 'The Influencer shall provide an active mobile contact number to Nextora Creations for official reference, customer coordination, and customer acquisition tracking purposes.',
+    boldPrefix: true,
+  },
+  {
+    prefix: '',
+    text: "Nextora Creations will use the provided contact number as one of the reference points to identify, record, and track customers acquired through each Influencer's promotional activities. This will help the company measure influencer performance, maintain accurate customer attribution records, and calculate eligible commissions under the revenue-sharing terms of this Agreement.",
+    boldPrefix: false,
+  },
+  {
+    prefix: '',
+    text: 'The Influencer shall cooperate with Nextora Creations in identifying and managing referred customers and ensuring that relevant customer enquiries and referrals are properly recorded.',
+    boldPrefix: false,
+  },
+  {
+    prefix: '',
+    text: 'Nextora Creations shall be responsible for software/application installation and setup, agreed promotional content creation, and technical assistance. The Influencer shall be responsible for customer communication and coordination as mutually agreed.',
+    boldPrefix: false,
+  },
+  {
+    prefix: '',
+    text: 'Providing the contact number is a mandatory condition of participation in the influencer partnership program. The contact number shall be used for the purposes stated above and handled in accordance with applicable privacy requirements.',
+    boldPrefix: false,
+    boldSnippet: 'mandatory condition of participation',
+  },
+  {
+    prefix: 'Customer Attribution: ',
+    text: 'Providing a contact number alone does not automatically qualify a customer for commission. Commission eligibility shall be determined using verified referral codes, tracking links, customer records, or other approved attribution methods specified in the revenue-sharing terms of this Agreement.',
+    boldPrefix: true,
+  },
+];
+
+export const MANDATORY_CONTACT_TRACKING_RAW_TEXT = `Mandatory Requirement: The Influencer shall provide an active mobile contact number to Nextora Creations for official reference, customer coordination, and customer acquisition tracking purposes.
+
+Nextora Creations will use the provided contact number as one of the reference points to identify, record, and track customers acquired through each Influencer's promotional activities. This will help the company measure influencer performance, maintain accurate customer attribution records, and calculate eligible commissions under the revenue-sharing terms of this Agreement.
+
+The Influencer shall cooperate with Nextora Creations in identifying and managing referred customers and ensuring that relevant customer enquiries and referrals are properly recorded.
+
+Nextora Creations shall be responsible for software/application installation and setup, agreed promotional content creation, and technical assistance. The Influencer shall be responsible for customer communication and coordination as mutually agreed.
+
+Providing the contact number is a mandatory condition of participation in the influencer partnership program. The contact number shall be used for the purposes stated above and handled in accordance with applicable privacy requirements.
+
+Customer Attribution: Providing a contact number alone does not automatically qualify a customer for commission. Commission eligibility shall be determined using verified referral codes, tracking links, customer records, or other approved attribution methods specified in the revenue-sharing terms of this Agreement.`;
 
 export const DEFAULT_CONTRACT_CLAUSES = {
   section_2_purpose: `The Influencer agrees to represent and promote Nextora POS as an independent marketing partner of Nextora Creations. The Influencer shall familiarize themselves with the product, understand its features, benefits, and workflows, and present it authentically to their audience as a product they are actively supporting and marketing. Both parties intend to build a mutually beneficial long-term partnership based on transparent communication, measurable marketing activities, and revenue sharing.
@@ -27,6 +75,8 @@ The Influencer acknowledges and agrees that they act solely as an independent ma
 2. Compliance with Advertising Standards: The Influencer shall strictly comply with applicable consumer protection guidelines, FTC/ASCI influencer disclosure requirements, and social media platform rules, clearly displaying "#Ad", "#Sponsored", or "Paid Partnership" disclosures.
 3. Prohibited Conduct: The Influencer shall not make exaggerated, false, or misleading claims regarding features, sales, profits, or business outcomes. The Influencer shall not offer unauthorized discounts, rebates, or financial commitments on behalf of Nextora Creations.
 4. Confidentiality & Privacy: The Influencer shall not access, disclose, misuse, or distribute any proprietary software code, customer data, unreleased features, or confidential commercial terms.`,
+
+  section_5_mandatory_tracking: MANDATORY_CONTACT_TRACKING_RAW_TEXT,
 
   section_6_brand_intellectual_property: `Nextora Creations retains exclusive ownership of all trademarks, trade names, brand logos, software copyrights, patents, and proprietary intellectual property related to Nextora POS and Nextora Creations.
 
@@ -435,11 +485,32 @@ export async function createAgreement(db, actor, input) {
   // Verify influencer exists
   const influencer = await getInfluencer(db, input.influencer_id);
 
+  // Validate mandatory influencer contact number
+  const contactNumber = (input.influencer_contact_number || input.phone || influencer.phone || '').trim();
+  assert(
+    contactNumber.length > 0,
+    400,
+    'Influencer Contact Number is mandatory for creating an agreement. Please provide an active mobile contact number.',
+    'INFLUENCER_PHONE_REQUIRED'
+  );
+  assert(
+    isValidMobilePhone(contactNumber),
+    400,
+    'Influencer Contact Number must be a valid mobile phone number with country code (10-15 digits).',
+    'INVALID_INFLUENCER_PHONE'
+  );
+
   const { rows: settingsRows } = await db.query('SELECT * FROM inv.business_settings WHERE id = true');
   const business = settingsRows[0] || {};
   const prefix = business.influencer_contract_prefix || 'NC/INF';
 
   return db.transaction(async tx => {
+    // If a contact number was supplied that differs from influencer record, persist it
+    if (contactNumber && contactNumber !== influencer.phone) {
+      await tx.query('UPDATE inv.influencers SET phone = $1, updated_at = now() WHERE id = $2', [contactNumber, influencer.id]);
+      influencer.phone = contactNumber;
+    }
+
     const allocated = await allocateNumber(tx, {
       docType: 'INFLUENCER_AGREEMENT',
       prefix,
@@ -506,6 +577,27 @@ export async function updateAgreementDraft(db, actor, id, input) {
   assert(existing.status === 'DRAFT' || existing.status === 'PENDING_APPROVAL', 400,
     `Agreement terms cannot be altered in ${existing.status} status. Duplicate as a new draft to modify finalized agreements.`,
     'AGREEMENT_IMMUTABLE');
+
+  const targetInfluencerId = input.influencer_id || existing.influencer_id;
+  const influencer = await getInfluencer(db, targetInfluencerId);
+  const contactNumber = (input.influencer_contact_number || input.phone || influencer.phone || '').trim();
+  assert(
+    contactNumber.length > 0,
+    400,
+    'Influencer Contact Number is mandatory. Please provide an active mobile contact number.',
+    'INFLUENCER_PHONE_REQUIRED'
+  );
+  assert(
+    isValidMobilePhone(contactNumber),
+    400,
+    'Influencer Contact Number must be a valid mobile phone number with country code (10-15 digits).',
+    'INVALID_INFLUENCER_PHONE'
+  );
+
+  if (contactNumber && contactNumber !== influencer.phone) {
+    await db.query('UPDATE inv.influencers SET phone = $1, updated_at = now() WHERE id = $2', [contactNumber, influencer.id]);
+    influencer.phone = contactNumber;
+  }
 
   const deliverablesJson = input.deliverables !== undefined
     ? (typeof input.deliverables === 'string' ? input.deliverables : JSON.stringify(input.deliverables))
@@ -592,6 +684,16 @@ export async function transitionAgreementStatus(db, actor, id, { action, reason 
     params.push(val);
     updates.push(`${col} = $${params.length}`);
   };
+
+  if (['SUBMIT_APPROVAL', 'APPROVE', 'SEND', 'ACCEPT', 'SIGN', 'ACTIVATE'].includes(action)) {
+    const influencer = await getInfluencer(db, existing.influencer_id);
+    assert(
+      Boolean(influencer.phone && isValidMobilePhone(influencer.phone)),
+      400,
+      'Influencer Contact Number is mandatory to finalize this agreement. Please ensure the influencer has a valid active contact number.',
+      'INFLUENCER_PHONE_REQUIRED'
+    );
+  }
 
   if (action === 'SUBMIT_APPROVAL') {
     assert(existing.status === 'DRAFT', 400, 'Only draft agreements can be submitted for approval.', 'INVALID_TRANSITION');
@@ -774,6 +876,12 @@ export async function buildContractSnapshot(db, agreementId) {
     if (existing && existing.contract_number) {
       existing.status = agreement.status;
       existing.is_finalized = true;
+      if (!existing.clauses) {
+        existing.clauses = { ...DEFAULT_CONTRACT_CLAUSES };
+      }
+      if (!existing.clauses.section_5_mandatory_tracking) {
+        existing.clauses.section_5_mandatory_tracking = MANDATORY_CONTACT_TRACKING_RAW_TEXT;
+      }
       if (!existing.company_logo) {
         existing.company_logo = { exists: false, data_uri: '', dataUri: '', mime_type: '', sha256: '', width: 0, height: 0, warning: '' };
       }
@@ -799,6 +907,9 @@ export async function buildContractSnapshot(db, agreementId) {
     ...DEFAULT_CONTRACT_CLAUSES,
     ...customClauses,
   };
+  if (!clauses.section_5_mandatory_tracking) {
+    clauses.section_5_mandatory_tracking = MANDATORY_CONTACT_TRACKING_RAW_TEXT;
+  }
 
   const baseIllustrative = calculateIllustrativeCommission({
     commission_basis_points: agreement.commission_basis_points,

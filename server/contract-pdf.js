@@ -147,10 +147,11 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     y = A4.height - 42;
   }
 
-  function drawText(value, x, top, size = 9, useBold = false, color = INK, max = CONTENT_WIDTH) {
+  function drawText(value, x, top, size = 9, useBold = false, color = INK, max = CONTENT_WIDTH, lineSpacing = null) {
     const content = String(value ?? '');
     if (!content.trim()) return top;
     const activeFont = useBold ? bold : font;
+    const step = lineSpacing ?? (size + 3);
     for (const line of wrapText(activeFont, content, size, max)) {
       if (top - size < MARGIN + FOOTER_HEIGHT) {
         addPage();
@@ -158,24 +159,24 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
         top = y;
       }
       page.drawText(line, { x, y: top - size, size, font: activeFont, color });
-      top -= size + 3;
+      top -= step;
     }
     return top;
   }
 
-  function drawSectionHeading(num, title, minContentHeight = 35) {
-    ensureSpace(38 + minContentHeight);
-    y -= 10;
+  function drawSectionHeading(num, title, minContentHeight = 20) {
+    ensureSpace(28 + minContentHeight);
+    y -= 5;
     page.drawRectangle({
-      x: MARGIN, y: y - 22, width: CONTENT_WIDTH, height: 22, color: SOFT_BG,
+      x: MARGIN, y: y - 19, width: CONTENT_WIDTH, height: 19, color: SOFT_BG,
     });
     page.drawRectangle({
-      x: MARGIN, y: y - 22, width: 3, height: 22, color: accent,
+      x: MARGIN, y: y - 19, width: 3, height: 19, color: accent,
     });
     page.drawText(`SECTION ${num}: ${title.toUpperCase()}`, {
-      x: MARGIN + 8, y: y - 15, size: 9.5, font: bold, color: INK,
+      x: MARGIN + 8, y: y - 13.5, size: 9, font: bold, color: INK,
     });
-    y -= 28;
+    y -= 24;
   }
 
   // ==================== PAGE 1 ====================
@@ -505,60 +506,181 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
   drawSectionHeading(5, 'Marketing Obligations and Professional Conduct');
   y = drawText(snapshot.clauses.section_5_conduct_obligations, MARGIN, y, 8, false, INK);
 
-  // --- SECTION 6: BRAND ASSETS AND INTELLECTUAL PROPERTY ---
-  drawSectionHeading(6, 'Brand Assets and Intellectual Property');
-  y = drawText(snapshot.clauses.section_6_brand_intellectual_property, MARGIN, y, 8, false, INK);
+  // Mandatory Influencer Contact Number & Customer Tracking Callout
+  const trackingHeading = 'IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER & CUSTOMER TRACKING';
+  const trackingParagraphs = [
+    [
+      { text: 'Mandatory Requirement: ', isBold: true },
+      { text: 'The Influencer shall provide an active mobile contact number to Nextora Creations for official reference, customer coordination, and customer acquisition tracking purposes.', isBold: false },
+    ],
+    [
+      { text: "Nextora Creations will use the provided contact number as one of the reference points to identify, record, and track customers acquired through each Influencer's promotional activities. This will help the company measure influencer performance, maintain accurate customer attribution records, and calculate eligible commissions under the revenue-sharing terms of this Agreement.", isBold: false },
+    ],
+    [
+      { text: 'The Influencer shall cooperate with Nextora Creations in identifying and managing referred customers and ensuring that relevant customer enquiries and referrals are properly recorded.', isBold: false },
+    ],
+    [
+      { text: 'Nextora Creations shall be responsible for software/application installation and setup, agreed promotional content creation, and technical assistance. The Influencer shall be responsible for customer communication and coordination as mutually agreed.', isBold: false },
+    ],
+    [
+      { text: 'Providing the contact number is a ', isBold: false },
+      { text: 'mandatory condition of participation', isBold: true },
+      { text: ' in the influencer partnership program. The contact number shall be used for the purposes stated above and handled in accordance with applicable privacy requirements.', isBold: false },
+    ],
+    [
+      { text: 'Customer Attribution: ', isBold: true },
+      { text: 'Providing a contact number alone does not automatically qualify a customer for commission. Commission eligibility shall be determined using verified referral codes, tracking links, customer records, or other approved attribution methods specified in the revenue-sharing terms of this Agreement.', isBold: false },
+    ],
+  ];
 
-  // ==================== PAGE 3: SECTIONS 7, 8, 9, 10 ====================
+  const calloutFontSize = 7.0;
+  const calloutLineStep = 8.8;
+  const calloutPGap = 2.5;
+  const calloutInnerW = CONTENT_WIDTH - 20;
+
+  function wrapRichSegments(segments, fontSize, maxW) {
+    const lines = [];
+    let curLine = [];
+    let curW = 0;
+    for (const seg of segments) {
+      const f = seg.isBold ? bold : font;
+      const parts = seg.text.split(/(\s+)/);
+      for (const part of parts) {
+        if (!part) continue;
+        const w = f.widthOfTextAtSize(part, fontSize);
+        if (curW + w <= maxW || curLine.length === 0) {
+          curLine.push({ text: part, isBold: seg.isBold, font: f, width: w });
+          curW += w;
+        } else {
+          lines.push(curLine);
+          if (part.trim().length === 0) {
+            curLine = [];
+            curW = 0;
+          } else {
+            curLine = [{ text: part, isBold: seg.isBold, font: f, width: w }];
+            curW = w;
+          }
+        }
+      }
+    }
+    if (curLine.length > 0) lines.push(curLine);
+    return lines;
+  }
+
+  const wrappedParagraphs = trackingParagraphs.map(p => wrapRichSegments(p, calloutFontSize, calloutInnerW));
+  const totalCalloutLines = wrappedParagraphs.reduce((sum, l) => sum + l.length, 0);
+  const calloutBoxH = 6 + 10 + 3 + (totalCalloutLines * calloutLineStep) + ((trackingParagraphs.length - 1) * calloutPGap) + 6;
+
+  ensureSpace(calloutBoxH + 4);
+  y -= 4;
+
+  // Background and subtle border
+  page.drawRectangle({
+    x: MARGIN,
+    y: y - calloutBoxH,
+    width: CONTENT_WIDTH,
+    height: calloutBoxH,
+    borderWidth: 0.5,
+    borderColor: LINE,
+    color: SOFT_BG,
+  });
+
+  // Left accent stripe
+  page.drawRectangle({
+    x: MARGIN,
+    y: y - calloutBoxH,
+    width: 3.5,
+    height: calloutBoxH,
+    color: accent,
+  });
+
+  // Heading
+  let calloutY = y - 11;
+  page.drawText(trackingHeading, {
+    x: MARGIN + 10,
+    y: calloutY,
+    size: 7.8,
+    font: bold,
+    color: INK,
+  });
+  calloutY -= 11;
+
+  // Paragraphs
+  for (let pIdx = 0; pIdx < wrappedParagraphs.length; pIdx++) {
+    const lines = wrappedParagraphs[pIdx];
+    for (const line of lines) {
+      let lineX = MARGIN + 10;
+      for (const item of line) {
+        page.drawText(item.text, {
+          x: lineX,
+          y: calloutY,
+          size: calloutFontSize,
+          font: item.font,
+          color: INK,
+        });
+        lineX += item.width;
+      }
+      calloutY -= calloutLineStep;
+    }
+    calloutY -= calloutPGap;
+  }
+
+  y -= calloutBoxH + 4;
+
+  // ==================== PAGE 3: SECTIONS 6, 7, 8, 9, 10 ====================
   // Deterministic page break to Page 3 for clean, robust 3-page layout
   if (pages.length === 2) {
     addPage();
     drawRunningHeader();
   }
 
+  // --- SECTION 6: BRAND ASSETS AND INTELLECTUAL PROPERTY ---
+  drawSectionHeading(6, 'Brand Assets and Intellectual Property');
+  y = drawText(snapshot.clauses.section_6_brand_intellectual_property, MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
+
   // --- SECTION 7: PAYMENT SCHEDULE, INVOICING & TAXES ---
   drawSectionHeading(7, 'Payment Schedule, Invoicing & Taxes');
-  y = drawText(snapshot.clauses.section_7_payment_invoicing, MARGIN, y, 8, false, INK);
+  y = drawText(snapshot.clauses.section_7_payment_invoicing, MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
 
   // --- SECTION 8: TERM, TERMINATION & POST-TERMINATION RIGHTS ---
   drawSectionHeading(8, 'Term, Termination & Post-Termination Rights');
-  y = drawText(snapshot.clauses.section_8_term_termination, MARGIN, y, 8, false, INK);
+  y = drawText(snapshot.clauses.section_8_term_termination, MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
 
   // --- SECTION 9: GENERAL LEGAL PROVISIONS ---
   drawSectionHeading(9, 'General Legal Provisions');
-  y = drawText(snapshot.clauses.section_9_general_legal, MARGIN, y, 8, false, INK);
+  y = drawText(snapshot.clauses.section_9_general_legal, MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
 
   // Special terms if configured
   if (snapshot.special_terms?.trim()) {
     drawSectionHeading('9A', 'Special Agreed Terms & Conditions');
-    y = drawText(snapshot.special_terms, MARGIN, y, 8, false, INK);
+    y = drawText(snapshot.special_terms, MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
   }
 
   // --- SECTION 10: ACCEPTANCE & EXECUTION ---
-  ensureSpace(140);
+  ensureSpace(120);
   drawSectionHeading(10, 'Acceptance & Execution');
-  y = drawText('IN WITNESS WHEREOF, the parties hereto have caused this Agreement to be duly executed by their authorized representatives as of the dates set forth below:', MARGIN, y, 8, false, INK);
-  y -= 10;
+  y = drawText('IN WITNESS WHEREOF, the parties hereto have caused this Agreement to be duly executed by their authorized representatives as of the dates set forth below:', MARGIN, y, 7.5, false, INK, CONTENT_WIDTH, 10);
+  y -= 6;
 
   const sigBoxW = (CONTENT_WIDTH - 20) / 2;
-  const sigBoxH = 95;
+  const sigBoxH = 86;
 
   // Nextora Creations Signatory Block
   page.drawRectangle({
     x: MARGIN, y: y - sigBoxH, width: sigBoxW, height: sigBoxH,
     borderWidth: 0.5, borderColor: LINE, color: rgb(1, 1, 1),
   });
-  page.drawText('FOR NEXTORA CREATIONS:', { x: MARGIN + 10, y: y - 14, size: 7.5, font: bold, color: MUTED });
+  page.drawText('FOR NEXTORA CREATIONS:', { x: MARGIN + 10, y: y - 13, size: 7.5, font: bold, color: MUTED });
   page.drawLine({
-    start: { x: MARGIN + 10, y: y - 48 },
-    end: { x: MARGIN + sigBoxW - 10, y: y - 48 },
+    start: { x: MARGIN + 10, y: y - 44 },
+    end: { x: MARGIN + sigBoxW - 10, y: y - 44 },
     thickness: 0.5,
     color: MUTED,
   });
-  page.drawText('Authorized Signature', { x: MARGIN + 10, y: y - 56, size: 6.5, font, color: MUTED });
-  page.drawText(`Name: ${snapshot.business?.signatory_name || 'Gorke Sai Kumar'}`, { x: MARGIN + 10, y: y - 68, size: 7.5, font: bold, color: INK });
-  page.drawText(`Designation: ${snapshot.business?.signatory_title || 'Founder & CEO'}`, { x: MARGIN + 10, y: y - 79, size: 7, font, color: MUTED });
-  page.drawText('Date: ________________________', { x: MARGIN + 10, y: y - 90, size: 7, font, color: MUTED });
+  page.drawText('Authorized Signature', { x: MARGIN + 10, y: y - 51, size: 6.5, font, color: MUTED });
+  page.drawText(`Name: ${snapshot.business?.signatory_name || 'Gorke Sai Kumar'}`, { x: MARGIN + 10, y: y - 62, size: 7.5, font: bold, color: INK });
+  page.drawText(`Designation: ${snapshot.business?.signatory_title || 'Founder & CEO'}`, { x: MARGIN + 10, y: y - 72, size: 7, font, color: MUTED });
+  page.drawText('Date: ________________________', { x: MARGIN + 10, y: y - 81, size: 7, font, color: MUTED });
 
   // Influencer Signatory Block
   const iSigX = MARGIN + sigBoxW + 20;
@@ -566,23 +688,23 @@ export async function renderContractPdf(snapshot, { companyLogo = null, productL
     x: iSigX, y: y - sigBoxH, width: sigBoxW, height: sigBoxH,
     borderWidth: 0.5, borderColor: LINE, color: rgb(1, 1, 1),
   });
-  page.drawText('FOR INFLUENCER / MARKETING PARTNER:', { x: iSigX + 10, y: y - 14, size: 7.5, font: bold, color: MUTED });
+  page.drawText('FOR INFLUENCER / MARKETING PARTNER:', { x: iSigX + 10, y: y - 13, size: 7.5, font: bold, color: MUTED });
   page.drawLine({
-    start: { x: iSigX + 10, y: y - 48 },
-    end: { x: iSigX + sigBoxW - 10, y: y - 48 },
+    start: { x: iSigX + 10, y: y - 44 },
+    end: { x: iSigX + sigBoxW - 10, y: y - 44 },
     thickness: 0.5,
     color: MUTED,
   });
-  page.drawText('Influencer Signature', { x: iSigX + 10, y: y - 56, size: 6.5, font, color: MUTED });
-  page.drawText(`Name: ${snapshot.influencer?.legal_name || '—'}`, { x: iSigX + 10, y: y - 68, size: 7.5, font: bold, color: INK });
-  page.drawText(`Instagram: ${snapshot.influencer?.instagram_username || '—'}`, { x: iSigX + 10, y: y - 79, size: 7, font, color: MUTED });
-  page.drawText('Date: ________________________', { x: iSigX + 10, y: y - 90, size: 7, font, color: MUTED });
+  page.drawText('Influencer Signature', { x: iSigX + 10, y: y - 51, size: 6.5, font, color: MUTED });
+  page.drawText(`Name: ${snapshot.influencer?.legal_name || '—'}`, { x: iSigX + 10, y: y - 62, size: 7.5, font: bold, color: INK });
+  page.drawText(`Instagram: ${snapshot.influencer?.instagram_username || '—'}`, { x: iSigX + 10, y: y - 72, size: 7, font, color: MUTED });
+  page.drawText('Date: ________________________', { x: iSigX + 10, y: y - 81, size: 7, font, color: MUTED });
 
-  y -= sigBoxH + 12;
+  y -= sigBoxH + 8;
 
   // Legal Notice
   page.drawText('Note: Generating or downloading this PDF document does not constitute formal execution or proof of signature. Both parties must execute this Agreement via verified electronic signature or ink signature before the partnership becomes active.', {
-    x: MARGIN, y: y - 8, size: 6, font, color: MUTED,
+    x: MARGIN, y: y - 6, size: 5.8, font, color: MUTED,
   });
 
   // ==================== RUNNING FOOTERS (POST-PROCESSING PASS) ====================

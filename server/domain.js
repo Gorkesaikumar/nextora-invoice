@@ -456,6 +456,17 @@ export const DELIVERABLE_TYPES = [
   'Other Agreed Activity'
 ];
 
+export function isValidMobilePhone(value) {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  // Format check: optional leading '+', digits, spaces, hyphens, and parentheses
+  if (!/^[+]?[0-9\s\-()]{7,25}$/.test(trimmed)) return false;
+  // Digits count check: plausible mobile numbers have between 10 and 15 digits
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return false;
+  return true;
+}
+
 export const influencerSchema = z.object({
   legal_name: required(160),
   display_name: required(160),
@@ -464,7 +475,7 @@ export const influencerSchema = z.object({
   instagram_url: clean(300).default('')
     .refine(v => !v || /^https?:\/\/(www\.)?instagram\.com\/[A-Za-z0-9_.]+\/?$/i.test(v), 'Enter a valid Instagram profile URL'),
   phone: clean(32).default('')
-    .refine(v => !v || /^[+]?[0-9\s\-()]{7,25}$/.test(v), 'Enter a valid phone number with country code'),
+    .refine(v => !v || isValidMobilePhone(v), 'Enter a valid mobile contact number with country code (10-15 digits)'),
   email: z.union([email, z.literal('')]).default(''),
   address: multiline(600).default(''),
   city: clean(100).default(''),
@@ -494,6 +505,7 @@ export const BRANDING_MODES = ['BOTH', 'COMPANY_ONLY', 'PRODUCT_ONLY', 'TEXT_ONL
 
 export const agreementDraftObject = z.object({
   influencer_id: uuid,
+  influencer_contact_number: clean(32).optional(),
   title: required(200).default('Influencer Marketing & Revenue-Sharing Agreement — Nextora POS'),
   brand_name: required(100).default('Nextora Creations'),
   product_name: required(100).default('Nextora POS'),
@@ -523,6 +535,7 @@ export const agreementDraftObject = z.object({
 
 export const agreementUpdateSchema = z.object({
   influencer_id: uuid.optional(),
+  influencer_contact_number: clean(32).optional(),
   title: clean(200).optional(),
   brand_name: clean(100).optional(),
   product_name: clean(100).optional(),

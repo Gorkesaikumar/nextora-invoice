@@ -777,3 +777,115 @@ test('Single Source of Truth: Canonical Contract Snapshot, HTML Preview, and PDF
   const noLogoPages = extractPdf(noLogoPdfRes.bytes);
   assert.equal(noLogoPages.length, 3);
 });
+
+test('Mandatory influencer contact number validation and Section 5 customer attribution clause', async () => {
+  const client = await withAdmin(14);
+
+  // 1. Influencer with NO phone
+  const infNoPhone = client.ok(await client.json('POST', '/api/marketing/influencers', sampleInfluencer({
+    legal_name: 'Kavya Verma',
+    instagram_username: '@kavya_trends',
+    email: 'kavya@example.com',
+    phone: '',
+  }))).influencer;
+
+  // 2. Creating agreement without phone or contact number is rejected (400 INFLUENCER_PHONE_REQUIRED)
+  const rejectNoPhone = await client.json('POST', '/api/marketing/agreements', sampleAgreement(infNoPhone.id));
+  assert.equal(rejectNoPhone.status, 400);
+  assert.equal(rejectNoPhone.data?.code, 'INFLUENCER_PHONE_REQUIRED');
+
+  // 3. Creating agreement with invalid contact number format is rejected (400 INVALID_INFLUENCER_PHONE)
+  const rejectInvalidPhone = await client.json('POST', '/api/marketing/agreements', sampleAgreement(infNoPhone.id, {
+    influencer_contact_number: '12345',
+  }));
+  assert.equal(rejectInvalidPhone.status, 400);
+  assert.equal(rejectInvalidPhone.data?.code, 'INVALID_INFLUENCER_PHONE');
+
+  const rejectLettersPhone = await client.json('POST', '/api/marketing/agreements', sampleAgreement(infNoPhone.id, {
+    influencer_contact_number: '+91 98765 ABCDE',
+  }));
+  assert.equal(rejectLettersPhone.status, 400);
+  assert.equal(rejectLettersPhone.data?.code, 'INVALID_INFLUENCER_PHONE');
+
+  // 4. Creating agreement with valid contact number succeeds and updates influencer.phone
+  const validPhone = '+91 98765 11223';
+  const created = client.ok(await client.json('POST', '/api/marketing/agreements', sampleAgreement(infNoPhone.id, {
+    influencer_contact_number: validPhone,
+  })));
+  const agreement = created.agreement;
+  assert.equal(agreement.status, 'DRAFT');
+
+  // Verify influencer record now has the phone persisted
+  const fetchedInf = client.ok(await client.json('GET', `/api/marketing/influencers/${infNoPhone.id}`));
+  assert.equal(fetchedInf.influencer.phone, validPhone);
+
+  // 5. Updating agreement draft with new valid contact number
+  const newPhone = '+91 91234 56789';
+  const updatedAgr = client.ok(await client.json('PATCH', `/api/marketing/agreements/${agreement.id}`, {
+    influencer_contact_number: newPhone,
+  }));
+  assert.equal(updatedAgr.agreement.id, agreement.id);
+
+  // Verify updated phone on influencer
+  const refetchedInf = client.ok(await client.json('GET', `/api/marketing/influencers/${infNoPhone.id}`));
+  assert.equal(refetchedInf.influencer.phone, newPhone);
+
+  // 6. Updating with invalid phone fails
+  const rejectBadUpdate = await client.json('PATCH', `/api/marketing/agreements/${agreement.id}`, {
+    influencer_contact_number: 'invalid-num',
+  });
+  assert.equal(rejectBadUpdate.status, 400);
+  assert.equal(rejectBadUpdate.data?.code, 'INVALID_INFLUENCER_PHONE');
+
+  // 7. Verify Section 5 Mandatory Tracking Clause in Canonical HTML Preview
+  const preview = client.ok(await client.json('GET', `/api/marketing/agreements/${agreement.id}/preview`));
+  const html = preview.html;
+  assert.ok(html.includes('IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER &amp; CUSTOMER TRACKING') || html.includes('IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER & CUSTOMER TRACKING'));
+  assert.ok(html.includes('Mandatory Requirement:'));
+  assert.ok(html.includes('mandatory condition of participation'));
+  assert.ok(html.includes('Customer Attribution:'));
+  assert.ok(html.includes('nc-tracking-callout'));
+  assert.ok(html.includes('Page 2 of 3'));
+  assert.ok(html.includes('Page 3 of 3'));
+  assert.equal(preview.snapshot.influencer.phone, newPhone);
+
+  // 8. Verify Section 5 Clause & 3-page parity in Generated Vector PDF
+  const pdfRes = await client.binary('GET', `/api/marketing/agreements/${agreement.id}/pdf`);
+  assert.equal(pdfRes.status, 200);
+  const pdfPages = extractPdf(pdfRes.bytes);
+  assert.equal(pdfPages.length, 3, 'Contract PDF must be exactly 3 pages');
+
+  // Verify Page 2 contains the tracking callout heading and text
+  const page2Text = pdfPages[1].text.join(' ');
+  assert.ok(page2Text.includes('IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER & CUSTOMER TRACKING'), 'Page 2 contains mandatory tracking heading');
+  assert.ok(page2Text.includes('Mandatory Requirement:'), 'Page 2 contains Mandatory Requirement: lead');
+  assert.ok(page2Text.includes('mandatory condition of participation'), 'Page 2 contains mandatory condition text');
+  assert.ok(page2Text.includes('Customer Attribution:'), 'Page 2 contains Customer Attribution: lead');
+  assert.ok(page2Text.includes('Page 2 of 3'), 'Page 2 footer is Page 2 of 3');
+
+  // Verify Page 3 contains Section 6, 7, 8, 9, 10
+  const page3Text = pdfPages[2].text.join(' ');
+  assert.ok(page3Text.includes('SECTION 6: BRAND ASSETS AND INTELLECTUAL PROPERTY'), 'Page 3 contains Section 6');
+  assert.ok(page3Text.includes('SECTION 7: PAYMENT SCHEDULE, INVOICING & TAXES'), 'Page 3 contains Section 7');
+  assert.ok(page3Text.includes('SECTION 8: TERM, TERMINATION & POST-TERMINATION RIGHTS'), 'Page 3 contains Section 8');
+  assert.ok(page3Text.includes('SECTION 9: GENERAL LEGAL PROVISIONS'), 'Page 3 contains Section 9');
+  assert.ok(page3Text.includes('SECTION 10: ACCEPTANCE & EXECUTION'), 'Page 3 contains Section 10 signatures');
+  assert.ok(page3Text.includes('Page 3 of 3'), 'Page 3 footer is Page 3 of 3');
+
+  // Verify Page 1 footer and influencer details
+  const page1Text = pdfPages[0].text.join(' ');
+  assert.ok(page1Text.includes('Page 1 of 3'), 'Page 1 footer is Page 1 of 3');
+  assert.ok(page1Text.includes(newPhone), 'Page 1 metadata contains influencer phone');
+
+  // 9. Historical contract handling: Agreement with missing/empty phone degrades gracefully
+  // Transition agreement through lifecycle to finalization
+  client.ok(await client.json('POST', `/api/marketing/agreements/${agreement.id}/status`, { action: 'SEND' }));
+  client.ok(await client.json('POST', `/api/marketing/agreements/${agreement.id}/status`, { action: 'ACCEPT' }));
+  client.ok(await client.json('POST', `/api/marketing/agreements/${agreement.id}/status`, { action: 'SIGN' }));
+  const activated = client.ok(await client.json('POST', `/api/marketing/agreements/${agreement.id}/status`, { action: 'ACTIVATE' }));
+  assert.equal(activated.agreement.status, 'ACTIVE');
+
+  // Verify finalized PDF can still be downloaded without error
+  const finalPdfRes = await client.binary('GET', `/api/marketing/agreements/${agreement.id}/pdf`);
+  assert.equal(finalPdfRes.status, 200);
+});

@@ -53,7 +53,7 @@ export async function influencerForm(ctx, existing = null, callback = null) {
         ${field({ label: 'Influencer Display Name', name: 'display_name', required: true, value: influencer.display_name, hint: 'Public brand or creator name.' })}
         ${field({ label: 'Instagram Handle', name: 'instagram_username', required: true, value: influencer.instagram_username, placeholder: '@influencername', hint: 'Primary social media identity.' })}
         ${field({ label: 'Instagram Profile URL', name: 'instagram_url', value: influencer.instagram_url, placeholder: 'https://instagram.com/influencername' })}
-        ${field({ label: 'Mobile Number', name: 'phone', value: influencer.phone, placeholder: '+91 98765 43210', hint: 'Include country code.' })}
+        ${field({ label: 'Influencer Contact Number', name: 'phone', required: true, value: influencer.phone, placeholder: '+91 98765 43210', hint: 'Mandatory active mobile contact number for customer coordination and attribution tracking.' })}
         ${field({ label: 'Email Address', name: 'email', type: 'email', value: influencer.email, hint: 'Official email for contract delivery and formal correspondence.' })}
         ${field({ label: 'Street Address', name: 'address', type: 'textarea', value: influencer.address, className: 'sm:col-span-2' })}
         ${field({ label: 'City', name: 'city', value: influencer.city })}
@@ -191,6 +191,8 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
   };
 
   const previewContractNo = existing?.contract_number || reference?.numbering_preview?.influencer_agreement || 'NC/INF/2026-27/0001';
+  const selectedInfluencer = influencers.find(i => i.id === (preselectedInfluencerId || agreement.influencer_id)) || influencers[0];
+  const initialPhone = existing?.influencer_phone || selectedInfluencer?.phone || '';
 
   let currentDeliverables = [...existingDeliverables];
 
@@ -249,12 +251,19 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
                 <label class="label-technical">Influencer Partner</label>
                 <p class="text-sm font-semibold mt-1">${esc(existing.influencer_legal_name || existing.influencer_display_name)}</p>
                 <p class="font-mono text-xs text-on-surface-variant">${esc(existing.influencer_instagram_username || '')}</p>
-                <input type="hidden" name="influencer_id" value="${existing.influencer_id}">
+                <input type="hidden" name="influencer_id" id="influencer_id" value="${existing.influencer_id}">
               </div>
             ` : field({
-              label: 'Select Influencer', name: 'influencer_id', required: true,
+              label: 'Select Influencer', name: 'influencer_id', id: 'influencer_id', required: true,
               options: influencers.map(i => ({ value: i.id, label: `${i.display_name} (${i.instagram_username}) — ${i.legal_name}` })),
               value: agreement.influencer_id,
+            })}
+
+            ${field({
+              label: 'Influencer Contact Number', name: 'influencer_contact_number', id: 'influencer_contact_number', required: true,
+              value: existing?.influencer_phone || initialPhone || '',
+              placeholder: '+91 98765 43210',
+              hint: 'Mandatory active mobile contact number for customer coordination and attribution tracking.',
             })}
 
             ${field({
@@ -451,6 +460,14 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
   });
 
   // UI Interactive wires
+  node.querySelector('#influencer_id')?.addEventListener('change', e => {
+    const chosen = influencers.find(i => i.id === e.target.value);
+    const phoneInput = node.querySelector('#influencer_contact_number');
+    if (phoneInput && chosen) {
+      phoneInput.value = chosen.phone || '';
+    }
+  });
+
   node.querySelector('#commission_basis')?.addEventListener('change', e => {
     const customWrap = node.querySelector('#custom-basis-wrap');
     if (customWrap) customWrap.classList.toggle('hidden', e.target.value !== 'CUSTOM');
@@ -522,6 +539,7 @@ export async function agreementForm(ctx, existing = null, preselectedInfluencerI
 
     const payload = {
       influencer_id: String(form.get('influencer_id')),
+      influencer_contact_number: String(form.get('influencer_contact_number') || '').trim(),
       title: String(form.get('title') || '').trim(),
       brand_name: String(form.get('brand_name') || 'Nextora Creations').trim(),
       product_name: String(form.get('product_name') || 'Nextora POS').trim(),

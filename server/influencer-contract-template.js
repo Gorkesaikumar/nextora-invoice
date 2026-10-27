@@ -327,7 +327,42 @@ export function renderInfluencerContractHtml(snapshot, {
             .map(p => p.trim() ? `<p class="nc-clause-p">${esc(p)}</p>` : '')
             .join('')}
         </div>
+
+        <!-- Visually Prominent Highlighted Mandatory Tracking Container -->
+        <div class="nc-tracking-callout">
+          <div class="nc-callout-header">
+            <h4 class="nc-callout-title">IMPORTANT — MANDATORY INFLUENCER CONTACT NUMBER &amp; CUSTOMER TRACKING</h4>
+          </div>
+          <div class="nc-callout-body">
+            <p class="nc-callout-p"><strong>Mandatory Requirement:</strong> The Influencer shall provide an active mobile contact number to Nextora Creations for official reference, customer coordination, and customer acquisition tracking purposes.</p>
+            <p class="nc-callout-p">Nextora Creations will use the provided contact number as one of the reference points to identify, record, and track customers acquired through each Influencer's promotional activities. This will help the company measure influencer performance, maintain accurate customer attribution records, and calculate eligible commissions under the revenue-sharing terms of this Agreement.</p>
+            <p class="nc-callout-p">The Influencer shall cooperate with Nextora Creations in identifying and managing referred customers and ensuring that relevant customer enquiries and referrals are properly recorded.</p>
+            <p class="nc-callout-p">Nextora Creations shall be responsible for software/application installation and setup, agreed promotional content creation, and technical assistance. The Influencer shall be responsible for customer communication and coordination as mutually agreed.</p>
+            <p class="nc-callout-p">Providing the contact number is a <strong>mandatory condition of participation</strong> in the influencer partnership program. The contact number shall be used for the purposes stated above and handled in accordance with applicable privacy requirements.</p>
+            <p class="nc-callout-p"><strong>Customer Attribution:</strong> Providing a contact number alone does not automatically qualify a customer for commission. Commission eligibility shall be determined using verified referral codes, tracking links, customer records, or other approved attribution methods specified in the revenue-sharing terms of this Agreement.</p>
+          </div>
+        </div>
       </section>
+    </div>
+
+    <!-- Page 2 Running Footer -->
+    <footer class="nc-running-footer">
+      <div class="nc-footer-meta">Nextora Creations · ${esc(s.product_name || 'Nextora POS')} Influencer Partnership Agreement · ${esc(s.contract_number)}</div>
+      <div class="nc-footer-page">Page 2 of 3</div>
+    </footer>
+  </div>
+
+  <!-- ==================== PAGE 3: SECTIONS 6, 7, 8, 9, 10 ==================== -->
+  <div class="nc-a4-page" data-page="3">
+    <div class="nc-page-content">
+      <div class="nc-top-stripe"></div>
+
+      <!-- Page 3 Running Header -->
+      <header class="nc-running-header">
+        <div class="nc-running-title">INFLUENCER MARKETING &amp; REVENUE-SHARING AGREEMENT</div>
+        <div class="nc-running-contract font-mono">Contract: ${esc(s.contract_number)}</div>
+      </header>
+      <div class="nc-running-divider"></div>
 
       <!-- SECTION 6: BRAND ASSETS AND INTELLECTUAL PROPERTY -->
       <section class="nc-section">
@@ -342,26 +377,6 @@ export function renderInfluencerContractHtml(snapshot, {
             .join('')}
         </div>
       </section>
-    </div>
-
-    <!-- Page 2 Running Footer -->
-    <footer class="nc-running-footer">
-      <div class="nc-footer-meta">Nextora Creations · ${esc(s.product_name || 'Nextora POS')} Influencer Partnership Agreement · ${esc(s.contract_number)}</div>
-      <div class="nc-footer-page">Page 2 of 3</div>
-    </footer>
-  </div>
-
-  <!-- ==================== PAGE 3: SECTIONS 7, 8, 9, 10 ==================== -->
-  <div class="nc-a4-page" data-page="3">
-    <div class="nc-page-content">
-      <div class="nc-top-stripe"></div>
-
-      <!-- Page 3 Running Header -->
-      <header class="nc-running-header">
-        <div class="nc-running-title">INFLUENCER MARKETING &amp; REVENUE-SHARING AGREEMENT</div>
-        <div class="nc-running-contract font-mono">Contract: ${esc(s.contract_number)}</div>
-      </header>
-      <div class="nc-running-divider"></div>
 
       <!-- SECTION 7: PAYMENT SCHEDULE, INVOICING & TAXES -->
       <section class="nc-section">
@@ -748,6 +763,45 @@ export function renderInfluencerContractHtml(snapshot, {
     color: #334155;
     margin: 0;
     text-align: justify;
+  }
+
+  /* Highlighted Callout for Mandatory Contact & Tracking */
+  .nc-tracking-callout {
+    margin-top: 10px;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-left: 3.5px solid ${accentColor};
+    padding: 9px 12px;
+    border-radius: 2px;
+  }
+  .nc-callout-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 5px;
+  }
+  .nc-callout-title {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: #0f172a;
+    margin: 0;
+    text-transform: uppercase;
+  }
+  .nc-callout-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4.5px;
+  }
+  .nc-callout-p {
+    font-size: 8.5px;
+    line-height: 1.45;
+    color: #1e293b;
+    margin: 0;
+    text-align: justify;
+  }
+  .nc-callout-p strong {
+    font-weight: 700;
+    color: #0f172a;
   }
 
   /* Parties Grid */

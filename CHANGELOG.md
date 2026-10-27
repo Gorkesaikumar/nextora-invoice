@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.8] - 2026-10-27
+
+### Added
+- **Mandatory Influencer Contact Number & Customer Attribution Tracking**:
+  - Enforced mandatory active mobile contact number requirement across agreement creation, draft edits, and contract status finalization workflows.
+  - Added robust phone validation logic (`isValidMobilePhone`) in `server/domain.js` ensuring plausible mobile formats (10–15 numeric digits, country dialing codes, standard separators).
+  - Prominently incorporated the customer attribution tracking clause into Section 5 as an emphasized callout container with bold subsection leads (`Mandatory Requirement:`, `mandatory condition of participation`, and `Customer Attribution:`).
+  - Updated agreement form and influencer form in `src/views/marketing.js` with auto-population of influencer contact numbers upon counterparty selection.
+  - Upgraded both canonical HTML preview (`server/influencer-contract-template.js`) and vector PDF generator (`server/contract-pdf.js`) to render matching visual callout containers with left cyan accent stripe (`#00AEEF`), soft background, and outline borders.
+  - Maintained exact 3-page layout budget and visual parity with Section 6 smoothly transitioning to Page 3, ensuring zero clipping or page overflow.
+  - Handled historical agreements without contact numbers gracefully (`Phone: —`), preserving immutable records without fabricating data.
+
 ## [1.1.7] - 2026-10-26
 
 ### Fixed
